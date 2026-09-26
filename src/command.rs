@@ -5,7 +5,7 @@ use crate::Operation;
 
 pub(crate) const MAX_ARGV: usize = 70;
 pub(crate) const MAX_BYTES: usize = 24_576;
-const USAGE: &str = "usage: ssh [--session NAME] --secret DRN [--timeout SECONDS] PROFILE -- ARGV...\n       ssh --job JOBID --secret DRN\n       ssh --artifacts [--session NAME] --secret DRN PROFILE [PATH]\ntry 'ssh --help'\n";
+pub(crate) const USAGE: &str = "usage: ssh [--session NAME] --secret DRN [--timeout SECONDS] PROFILE -- ARGV...\n       ssh --job JOBID --secret DRN\n       ssh --artifacts [--session NAME] --secret DRN PROFILE [PATH]\ntry 'ssh --help'\n";
 const HELP: &str = "ssh: broker-authorized commands in vm-runner jails (not SSH transport).\n\nssh [--session NAME] --secret DRN [--timeout SECONDS] PROFILE -- ARGV...\nssh --job JOBID --secret DRN\nssh --artifacts [--session NAME] --secret DRN PROFILE [PATH]\n\nSession defaults to default; timeout is 1-25 seconds (default 25).\nNAME and PROFILE: lowercase letters, digits and hyphens, 1-63 characters,\nstarting with a letter or digit. Stdin passes through to exec.\n--secret requires a bare drn:<authority>:secret:<realm>:<path>.\nThe broker authorizes and injects the Bearer token; this provider never sees it.\nArtifacts return UTF-8 text up to 64 KiB, otherwise metadata only.\nArtifact reads require a flat name: [A-Za-z0-9][A-Za-z0-9._-]{0,127}.\nCopy other files to a flat name under /artifacts first; listing shows all paths.\n-h, --help prints this help. No retries; poll an unknown outcome with --job.\n";
 const SECRET: &str = "ssh: --secret requires one bare secret DRN\n";
 pub(crate) const ARTIFACT_PATH: &str = "ssh: artifact reads require a flat name; copy the file to a flat name under /artifacts first (e.g. ssh --secret DRN PROFILE -- cp 'dir/a b.png' /artifacts/shot.png)\n";

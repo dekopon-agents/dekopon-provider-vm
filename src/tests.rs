@@ -141,7 +141,7 @@ fn malformed_forms_render_fixed_usage_without_echoing_values() {
     }
 }
 #[test]
-fn help_is_local_and_input_caps_include_stdin() {
+fn help_is_local_and_missing_secret_is_named() {
     assert!(
         matches!(command::run(&words(&["travel", "--", "pwd"]), None), CommandRun::Rendered { status: 2, stderr, .. } if stderr == "ssh: --secret requires one bare secret DRN\n")
     );
@@ -150,26 +150,30 @@ fn help_is_local_and_input_caps_include_stdin() {
             matches!(command::run(&words(&[flag]), None), CommandRun::Rendered { status: 0, stderr, .. } if stderr.is_empty())
         );
     }
-    for args in [
-        vec!["x".into(); 71],
-        vec!["x".repeat(command::MAX_BYTES + 1)],
-    ] {
-        assert!(matches!(
-            command::run(&args, None),
-            CommandRun::Rendered { status: 2, .. }
-        ));
-    }
-    assert!(matches!(
-        command::run(
-            &words(&["--secret", SECRET, "travel", "--", "cat"]),
-            Some(&"x".repeat(command::MAX_BYTES))
-        ),
-        CommandRun::Rendered { status: 2, .. }
-    ));
     for invalid in ["", "A", "-a", "a_b", &"a".repeat(64)] {
         assert!(!command::name(invalid));
     }
     assert!(command::name(&"a".repeat(63)));
+}
+#[test]
+fn excessive_argv_entries_refuse_an_otherwise_valid_exec() {
+    let mut args = words(&["--secret", SECRET, "travel", "--", "echo"]);
+    args.resize(command::MAX_ARGV + 1, "x".into());
+    assert_usage(command::run(&args, None));
+}
+#[test]
+fn input_byte_cap_counts_valid_argv_and_stdin_together() {
+    let args = words(&["--secret", SECRET, "travel", "--", "cat"]);
+    let payload = "x".repeat(command::MAX_BYTES - args.iter().map(String::len).sum::<usize>() + 1);
+    assert_usage(command::run(&args, Some(&payload)));
+    let mut args = args;
+    args.push(payload);
+    assert_usage(command::run(&args, None));
+}
+fn assert_usage(run: CommandRun) {
+    assert!(
+        matches!(run, CommandRun::Rendered { status: 2, stdout, stderr } if stdout.is_empty() && stderr == command::USAGE)
+    );
 }
 fn response(status: u16, body: Value) -> Response {
     Response {
