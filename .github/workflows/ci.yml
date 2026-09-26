@@ -1,0 +1,13 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: dekopon-agents/provider-workflows/.github/workflows/ci.yml@c8404236c18bcff3e089677e99ec3075d14b5679 # v4

@@ -1,0 +1,81 @@
+apiVersion: dekopon.dev/brokerd/v1alpha1
+socketPath: /run/dekopon/broker.sock
+policiesPath: policies.cedar
+secretMapPath: /etc/dekopon/secret-map.yaml
+providers: [/opt/dekopon/providers/vm-provider.wasm]
+principals:
+  example-caller:
+    subjects: [slack.example.user]
+providerSettings:
+  vm:
+    baseUrl: https://vm-runner.vm-runner.svc.cluster.local:8443
+http:
+  extraCABundles: [/var/run/dekopon-trust/roots.pem]
+  nonPublicHttps: [vm-runner.vm-runner.svc.cluster.local:8443]
+capabilities:
+  vm:
+    constraints:
+      timeoutMs: 120000
+      maxOutputBytes: 1048576
+      http:
+        propagateTrace: true
+        allowedHosts: [vm-runner.vm-runner.svc.cluster.local:8443]
+        allowedMethods: [GET, POST]
+        maxRequests: 2
+        maxRequestBytes: 200000
+        maxResponseBytes: 1048576
+        allowPlaintextLoopback: false
+    capabilities:
+      vm.exec:
+        constraints:
+          http:
+            allowedMethods: [POST]
+      vm.job.get:
+        constraints:
+          timeoutMs: 30000
+          http:
+            allowedMethods: [GET]
+            maxRequests: 1
+      vm.artifact.read: {}
+
+# Owner-only secret-map fragment; never put token bytes in providerSettings.
+# Separate bindings scope each capability to its methods and route family.
+# Broker 0.22 supports exact/segmentPrefix paths, not wildcards or per-path methods.
+# The secureFile is a broker-owned 0600 regular file, not a projected-token symlink.
+# apiVersion: dekopon.dev/secret-map/v1alpha1
+# mapRevision: vm-example
+# secrets:
+#   - drn: drn:com.xrl:secret:prod:vm/token
+#     source: {kind: secureFile, path: /run/dekopon/vm-token}
+#     projection: {format: utf8}
+#     bindings:
+#       - id: vm-exec-token
+#         capability: vm.exec
+#         sink: httpBearer
+#         allowedHosts: [vm-runner.vm-runner.svc.cluster.local:8443]
+#         # POST /v1/sessions, then POST /v1/sessions/{id}/exec.
+#         allowedMethods: [POST]
+#         allowedPaths:
+#           - {match: segmentPrefix, path: /v1/sessions}
+#         allowQuery: false
+#         maxInjections: 2
+#       - id: vm-artifact-token
+#         capability: vm.artifact.read
+#         sink: httpBearer
+#         allowedHosts: [vm-runner.vm-runner.svc.cluster.local:8443]
+#         # POST /v1/sessions, then GET /v1/sessions/{id}/artifacts[/name].
+#         allowedMethods: [POST, GET]
+#         allowedPaths:
+#           - {match: segmentPrefix, path: /v1/sessions}
+#         allowQuery: false
+#         maxInjections: 2
+#       - id: vm-job-token
+#         capability: vm.job.get
+#         sink: httpBearer
+#         allowedHosts: [vm-runner.vm-runner.svc.cluster.local:8443]
+#         # GET /v1/jobs/{id} only.
+#         allowedMethods: [GET]
+#         allowedPaths:
+#           - {match: segmentPrefix, path: /v1/jobs}
+#         allowQuery: false
+#         maxInjections: 1
