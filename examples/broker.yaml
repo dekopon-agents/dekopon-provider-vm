@@ -1,0 +1,57 @@
+apiVersion: dekopon.dev/brokerd/v1alpha1
+socketPath: /run/dekopon/broker.sock
+policiesPath: policies.cedar
+secretMapPath: /etc/dekopon/secret-map.yaml
+providers: [/opt/dekopon/providers/vm-provider.wasm]
+principals:
+  example-caller:
+    subjects: [slack.example.user]
+providerSettings:
+  vm:
+    baseUrl: https://vm-runner.vm-runner.svc.cluster.local:8443
+http:
+  extraCABundles: [/var/run/dekopon-trust/roots.pem]
+  nonPublicHttps: [vm-runner.vm-runner.svc.cluster.local:8443]
+capabilities:
+  vm:
+    constraints:
+      timeoutMs: 30000
+      maxOutputBytes: 1048576
+      http:
+        # Requires broker >= 0.23; remove this field on 0.22.
+        propagateTrace: true
+        allowedHosts: [vm-runner.vm-runner.svc.cluster.local:8443]
+        allowedMethods: [GET, POST]
+        maxRequests: 2
+        maxRequestBytes: 200000
+        maxResponseBytes: 1048576
+        allowPlaintextLoopback: false
+    capabilities:
+      vm.exec: {}
+      vm.job.get:
+        constraints:
+          http:
+            allowedMethods: [GET]
+            maxRequests: 1
+      vm.artifact.read: {}
+
+# Owner-only secret-map fragment; never put token bytes in providerSettings.
+# Repeat for vm.artifact.read; for vm.job.get use GET and maxInjections: 1.
+# The secureFile is a broker-owned 0600 regular file, not a projected-token symlink.
+# apiVersion: dekopon.dev/secret-map/v1alpha1
+# mapRevision: vm-example
+# secrets:
+#   - drn: drn:com.xrl:secret:prod:vm/token
+#     source: {kind: secureFile, path: /run/dekopon/vm-token}
+#     projection: {format: utf8}
+#     bindings:
+#       - id: vm-exec-token
+#         capability: vm.exec
+#         sink: httpBearer
+#         allowedHosts: [vm-runner.vm-runner.svc.cluster.local:8443]
+#         allowedMethods: [POST, GET]
+#         allowedPaths:
+#           - {match: segmentPrefix, path: /v1/sessions}
+#           - {match: segmentPrefix, path: /v1/jobs}
+#         allowQuery: false
+#         maxInjections: 2
