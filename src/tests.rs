@@ -19,7 +19,7 @@ fn proposal(args: &[&str], stdin: Option<&str>) -> dekopon_provider_sdk::Command
     v
 }
 #[test]
-fn every_form_proposes_only_its_closed_input_and_secret_use() {
+fn manifest_marks_session_creating_capabilities_as_external_writes() {
     let manifest = Vm::manifest();
     assert_eq!(manifest.command_words, ["ssh"]);
     assert_eq!(manifest.id.as_str(), "vm");
@@ -32,7 +32,11 @@ fn every_form_proposes_only_its_closed_input_and_secret_use() {
         vec![
             ("vm.exec", EffectKind::ExternalWrite, RiskLevel::High),
             ("vm.job.get", EffectKind::ReadOnly, RiskLevel::Low),
-            ("vm.artifact.read", EffectKind::ReadOnly, RiskLevel::Low),
+            (
+                "vm.artifact.read",
+                EffectKind::ExternalWrite,
+                RiskLevel::Low
+            ),
         ]
     );
     assert!(
@@ -41,6 +45,9 @@ fn every_form_proposes_only_its_closed_input_and_secret_use() {
             .iter()
             .all(|c| c.input_schema["additionalProperties"] == false)
     );
+}
+#[test]
+fn every_form_proposes_only_its_closed_input_and_secret_use() {
     let v = proposal(
         &["--secret", SECRET, "travel", "--", "echo", "--help"],
         Some("piped"),

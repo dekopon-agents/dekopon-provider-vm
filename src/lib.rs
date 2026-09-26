@@ -69,8 +69,8 @@ impl Provider for Vm {
                     }
                     .into(),
                     effect: match op {
-                        Operation::Exec => EffectKind::ExternalWrite,
-                        _ => EffectKind::ReadOnly,
+                        Operation::Exec | Operation::Artifact => EffectKind::ExternalWrite,
+                        Operation::Job => EffectKind::ReadOnly,
                     },
                     risk: match op {
                         Operation::Exec => RiskLevel::High,

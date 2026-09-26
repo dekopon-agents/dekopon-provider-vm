@@ -20,7 +20,7 @@ help renders stdout at exit 0. Options take separate values, at most once.
 |---|---|---|
 | `vm.exec` | ExternalWrite / High | create-or-get session, then exec |
 | `vm.job.get` | ReadOnly / Low | get job |
-| `vm.artifact.read` | ReadOnly / Low | create-or-get session, then list/read |
+| `vm.artifact.read` | ExternalWrite / Low | create-or-get session, then list/read |
 
 Exec proposes `{profile,name,argv,stdin?,deadlineMs}`; jobs `{jobId}`; artifacts
 `{profile,name,path?}`. Schemas are closed. Secret DRNs travel only beside input as
@@ -49,10 +49,14 @@ Other statuses produce fixed `vm-unauthorized`, `vm-conflict`, `vm-quota`,
 `vm-bad-request`, `vm-unavailable` or `vm-failed` errors. Transport failures use the
 broker HTTP error codes. All returned content is untrusted.
 
-See `examples/broker.yaml` and `examples/policies.cedar` for 0.22 configuration;
-`propagateTrace` alone requires broker >= 0.23. The port must appear in allowedHosts:
-a bare hostname grants HTTPS port 443, not 8443. Configure broker-only CA roots and
-non-public HTTPS access for cluster DNS. Artifact/session reads may create the named
+See `examples/broker.yaml` and `examples/policies.cedar` for 0.22 configuration.
+The port must appear in allowedHosts: a bare hostname grants HTTPS port 443, not 8443.
+Configure broker-only CA roots and non-public HTTPS access for cluster DNS.
+The whole-invocation `timeoutMs` must cover the cold-session boot budget plus
+`--timeout` (converted to milliseconds); the example allows 120000 ms for session
+operations and 30000 ms for job polling. Increase it if the boot budget exceeds
+95000 ms with the default 25-second exec timeout.
+Artifact reads are ExternalWrite because create-or-get can create a quota-counted
 session record; vm-runner boots lazily on exec. No deployment or release is implicit.
 
 ## Build and checks
