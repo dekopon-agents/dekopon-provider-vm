@@ -8,8 +8,8 @@ publish`, push an OCI artifact by hand, or create a release manually.
 2. Confirm `git status --short` is empty, the package version in `Cargo.toml` is exactly the version
    you are about to tag, no release exists for that tag, and `ghcr.io/dekopon-agents/provider-vm`
    carries no version with that tag. Published versions are immutable; a reused tag is refused.
-3. The owner dispatches `cut-release.yml` with the reviewed version; it creates the annotated tag
-   and starts the shared release workflow. Implementation agents do not tag or release.
+3. The owner commits the version bump to `main`, then pushes an annotated `vX.Y.Z` tag on that
+   commit; the tag starts the shared release workflow. Implementation agents do not tag or release.
 4. The workflow performs: MSRV/source/build gates -> provenance/SBOM attestations -> one newly owned
    draft with exact assets -> a verified GHCR `<version>` manifest -> prepublication
    re-verification -> explicit finalization -> anonymous verification. It never creates `latest` or
