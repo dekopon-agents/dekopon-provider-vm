@@ -1,29 +1,109 @@
 //! Broker-only imports deliberately prevent execution under a direct, non-broker host.
 
-use dekopon_provider_http::{Header, HttpError, HttpErrorCode, Request, Response, method};
-use dekopon_provider_sdk::{
-    CapabilityId, CommandRun, EffectKind, Provider, ProviderApiVersion, ProviderCapability,
-    ProviderError, ProviderManifest, RiskLevel,
+use dekopon_provider_sdk::provider::{
+    self, Capability, Code, Failure, Header, Http, HttpError, HttpErrorCode, Proposal, Provider,
+    Request, Response, Settings as ProviderSettings, Stdout, Usage, method,
 };
+use dekopon_provider_sdk::{EffectKind, RiskLevel};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
+use schemars::JsonSchema;
 use serde::Deserialize;
+use serde::Serialize;
 use serde_json::{Value, json};
+use std::{fmt, io::Read};
 
 mod command;
 
+#[cfg(test)]
 const DEFAULT_BASE: &str = "https://vm-runner.vm-runner.svc.cluster.local:8443";
 const TEXT_LIMIT: usize = 65_536;
 
-mod bindings {
-    wit_bindgen::generate!({
-        path: "wit",
-        world: "provider",
-        generate_all,
-        pub_export_macro: true,
-    });
-}
+/// Broker-authorized VM provider.
+pub struct Vm;
+/// Runs an argv in a named jail.
+pub struct Exec;
+/// Fetches a job's status.
+pub struct Job;
+/// Lists or reads an artifact.
+pub struct Artifact;
 
-struct Vm;
+/// The ssh argv grammar.
+pub struct VmArgs {
+    words: Vec<String>,
+}
+#[derive(clap::Parser)]
+#[command(name = "ssh", about = "Broker-authorized commands in vm-runner jails")]
+struct RawArgs {
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+    words: Vec<String>,
+}
+impl clap::CommandFactory for VmArgs {
+    fn command() -> clap::Command {
+        RawArgs::command()
+    }
+    fn command_for_update() -> clap::Command {
+        RawArgs::command_for_update()
+    }
+}
+impl clap::FromArgMatches for VmArgs {
+    fn from_arg_matches(matches: &clap::ArgMatches) -> Result<Self, clap::Error> {
+        let raw = <RawArgs as clap::FromArgMatches>::from_arg_matches(matches)?;
+        let mut index = 0;
+        while index < raw.words.len() {
+            let word = &raw.words[index];
+            if word == "--" {
+                break;
+            }
+            if matches!(
+                word.as_str(),
+                "--secret" | "--session" | "--timeout" | "--job"
+            ) {
+                index += 2;
+                continue;
+            }
+            if word.starts_with('-') && !matches!(word.as_str(), "--artifacts" | "-h" | "--help") {
+                return Err(clap::Error::raw(
+                    clap::error::ErrorKind::UnknownArgument,
+                    "unsupported ssh option",
+                ));
+            }
+            index += 1;
+        }
+        Ok(Self { words: raw.words })
+    }
+    fn from_arg_matches_mut(matches: &mut clap::ArgMatches) -> Result<Self, clap::Error> {
+        Self::from_arg_matches(matches)
+    }
+    fn update_from_arg_matches(&mut self, matches: &clap::ArgMatches) -> Result<(), clap::Error> {
+        *self = Self::from_arg_matches(matches)?;
+        Ok(())
+    }
+    fn update_from_arg_matches_mut(
+        &mut self,
+        matches: &mut clap::ArgMatches,
+    ) -> Result<(), clap::Error> {
+        self.update_from_arg_matches(matches)
+    }
+}
+impl clap::Parser for VmArgs {}
+
+#[derive(Debug)]
+/// Stable credential-free VM failure.
+#[derive(Clone)]
+pub struct VmError(&'static str);
+impl fmt::Display for VmError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl Failure for VmError {
+    fn code(&self) -> Code {
+        Code::new(self.0)
+    }
+}
+fn error(code: &'static str) -> VmError {
+    VmError(code)
+}
 
 #[derive(Clone, Copy)]
 enum Operation {
@@ -41,108 +121,120 @@ impl Operation {
         }
     }
 
-    fn parse(id: &str) -> Result<Self, ProviderError> {
+    fn parse(id: &str) -> Result<Self, VmError> {
         match id {
-            "vm.exec" => Ok(Self::Exec),
-            "vm.job.get" => Ok(Self::Job),
-            "vm.artifact.read" => Ok(Self::Artifact),
+            "vm.exec" | "exec" => Ok(Self::Exec),
+            "vm.job.get" | "job.get" => Ok(Self::Job),
+            "vm.artifact.read" | "artifact.read" => Ok(Self::Artifact),
             _ => Err(error("unsupported-capability")),
         }
     }
 }
 
 impl Provider for Vm {
-    fn manifest() -> ProviderManifest {
-        ProviderManifest {
-            api_version: ProviderApiVersion::V1Alpha1,
-            id: "vm".parse().expect("static provider ID"),
-            description: "Runs commands and reads results in vm-runner jails.".into(),
-            command_words: vec!["ssh".into()],
-            capabilities: [Operation::Exec, Operation::Job, Operation::Artifact]
-                .into_iter()
-                .map(|op| ProviderCapability {
-                    id: op.id().parse().expect("static capability ID"),
-                    description: match op {
-                        Operation::Exec => "Run argv in a named jail session.",
-                        Operation::Job => "Read an asynchronous job result.",
-                        Operation::Artifact => "List or read jail artifacts.",
-                    }
-                    .into(),
-                    effect: match op {
-                        Operation::Exec | Operation::Artifact => EffectKind::ExternalWrite,
-                        Operation::Job => EffectKind::ReadOnly,
-                    },
-                    risk: match op {
-                        Operation::Exec => RiskLevel::High,
-                        _ => RiskLevel::Low,
-                    },
-                    input_schema: schema(op),
-                })
-                .collect(),
-        }
-    }
-
-    fn run_command(argv: &[String], stdin: Option<&str>) -> Result<CommandRun, ProviderError> {
-        Ok(command::run(argv, stdin))
-    }
-
-    fn invoke(capability: &CapabilityId, input: Value) -> Result<Value, ProviderError> {
-        let settings = bindings::dekopon::settings::config::get();
-        let settings: Settings = settings
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(|_| error("invalid-settings"))?
-            .unwrap_or_default();
-        invoke_with(
-            capability,
-            input,
-            &settings.base_url,
-            dekopon_provider_http::send,
-        )
+    const ID: &'static str = "vm";
+    const COMMAND_WORDS: &'static [&'static str] = &["ssh"];
+    const DESCRIPTION: &'static str = "Runs commands and reads results in vm-runner jails.";
+    type Args = VmArgs;
+    type Capabilities = (Exec, Job, Artifact);
+    fn propose(args: VmArgs, stdin_piped: bool) -> Result<Proposal<Self>, Usage> {
+        command::propose(&args.words, stdin_piped)
     }
 }
 
+macro_rules! capability {
+    ($ty:ident, $name:literal, $desc:literal, $effect:expr, $risk:expr, $input:ty) => {
+        impl Capability for $ty {
+            type Provider = Vm;
+            const NAME: &'static str = $name;
+            const DESCRIPTION: &'static str = $desc;
+            const EFFECT: EffectKind = $effect;
+            const RISK: RiskLevel = $risk;
+            type Input = $input;
+            type Needs = (Http, ProviderSettings<Settings>);
+            type Error = VmError;
+            fn run(
+                input: Self::Input,
+                (http, settings): Self::Needs,
+                out: &mut Stdout,
+            ) -> Result<(), VmError> {
+                run_with(
+                    Operation::parse(Self::NAME)?,
+                    serde_json::to_value(input).map_err(|_| error("invalid-input"))?,
+                    &settings.into_inner().base_url,
+                    |r| http.send(r),
+                    out,
+                )
+            }
+        }
+    };
+}
+capability!(
+    Exec,
+    "exec",
+    "Run argv in a named jail session.",
+    EffectKind::ExternalWrite,
+    RiskLevel::High,
+    ExecInput
+);
+capability!(
+    Job,
+    "job.get",
+    "Read an asynchronous job result.",
+    EffectKind::ReadOnly,
+    RiskLevel::Low,
+    JobInput
+);
+capability!(
+    Artifact,
+    "artifact.read",
+    "List or read jail artifacts.",
+    EffectKind::ExternalWrite,
+    RiskLevel::Low,
+    ArtifactInput
+);
+
+/// Required owner-authored VM runner configuration.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Settings {
-    #[serde(default = "default_base")]
+pub struct Settings {
     base_url: String,
 }
 
-fn default_base() -> String {
-    DEFAULT_BASE.into()
-}
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            base_url: default_base(),
-        }
-    }
-}
-
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ExecInput {
-    profile: String,
-    name: String,
-    argv: Vec<String>,
-    stdin: Option<String>,
-    deadline_ms: u32,
+/// Closed VM execution input.
+pub struct ExecInput {
+    #[schemars(regex(pattern = "^[a-z0-9][a-z0-9-]{0,62}$"))]
+    pub(crate) profile: String,
+    #[schemars(regex(pattern = "^[a-z0-9][a-z0-9-]{0,62}$"))]
+    pub(crate) name: String,
+    #[schemars(length(min = 1, max = 70))]
+    pub(crate) argv: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) stdin_piped: bool,
+    #[schemars(range(min = 1000, max = 25000))]
+    pub(crate) deadline_ms: u32,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct ArtifactInput {
-    profile: String,
-    name: String,
-    path: Option<String>,
+/// Closed VM artifact input.
+pub struct ArtifactInput {
+    #[schemars(regex(pattern = "^[a-z0-9][a-z0-9-]{0,62}$"))]
+    pub(crate) profile: String,
+    #[schemars(regex(pattern = "^[a-z0-9][a-z0-9-]{0,62}$"))]
+    pub(crate) name: String,
+    #[schemars(regex(pattern = "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"))]
+    pub(crate) path: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct JobInput {
-    job_id: String,
+/// Closed VM job input.
+pub struct JobInput {
+    #[schemars(regex(pattern = "^[A-Za-z0-9-]{1,128}$"))]
+    pub(crate) job_id: String,
 }
 
 enum Input {
@@ -151,7 +243,7 @@ enum Input {
     Artifact(ArtifactInput),
 }
 
-fn input(op: Operation, value: Value) -> Result<Input, ProviderError> {
+fn input(op: Operation, value: Value) -> Result<Input, VmError> {
     let invalid = || error("invalid-input");
     match op {
         Operation::Exec => {
@@ -163,9 +255,7 @@ fn input(op: Operation, value: Value) -> Result<Input, ProviderError> {
                 || v.argv.len() > command::MAX_ARGV
                 || !(1_000..=25_000).contains(&v.deadline_ms)
                 || v.argv.iter().any(|a| a.contains('\0'))
-                || v.argv.iter().map(String::len).sum::<usize>()
-                    + v.stdin.as_ref().map_or(0, String::len)
-                    > command::MAX_BYTES
+                || v.argv.iter().map(String::len).sum::<usize>() > command::MAX_BYTES
             {
                 return Err(invalid());
             }
@@ -192,12 +282,12 @@ fn input(op: Operation, value: Value) -> Result<Input, ProviderError> {
 }
 
 fn invoke_with(
-    capability: &CapabilityId,
+    capability: &str,
     value: Value,
     base: &str,
     mut send: impl FnMut(Request) -> Result<Response, HttpError>,
-) -> Result<Value, ProviderError> {
-    let input = input(Operation::parse(capability.as_str())?, value)?;
+) -> Result<Value, VmError> {
+    let input = input(Operation::parse(capability)?, value)?;
     // Settings are owner-authored, but only the broker's allowedHosts grants a destination.
     if !(base.starts_with("https://") || base.starts_with("http://"))
         || base.contains(['?', '#', '@'])
@@ -206,6 +296,26 @@ fn invoke_with(
         return Err(error("invalid-settings"));
     }
     let base = base.trim_end_matches('/');
+    // Read and validate bounded piped data before the first VM effect (session creation).
+    let stdin_text = if let Input::Exec(v) = &input {
+        if v.stdin_piped {
+            let argv_bytes = v.argv.iter().map(String::len).sum::<usize>();
+            let mut raw = Vec::new();
+            provider::stdin()
+                .ok_or_else(|| error("invalid-input"))?
+                .take((command::MAX_BYTES - argv_bytes + 1) as u64)
+                .read_to_end(&mut raw)
+                .map_err(|_| error("invalid-input"))?;
+            if raw.len() > command::MAX_BYTES - argv_bytes {
+                return Err(error("invalid-input"));
+            }
+            Some(String::from_utf8(raw).map_err(|_| error("invalid-input"))?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let mut call = |verb, path: &str, body: Option<Value>, range: Option<&str>| {
         let mut request =
             Request::new(verb, format!("{base}{path}")).map_err(|_| error("invalid-settings"))?;
@@ -254,7 +364,7 @@ fn invoke_with(
     match input {
         Input::Exec(v) => {
             let mut body = json!({"argv": v.argv, "deadlineMs": v.deadline_ms});
-            if let Some(stdin) = v.stdin {
+            if let Some(stdin) = stdin_text {
                 body["stdin"] = stdin.into();
             }
             // These non-2xx bodies are ExecResult, not transport failures, in vm-runner's OpenAPI.
@@ -291,14 +401,14 @@ fn encode(value: &str) -> String {
     utf8_percent_encode(value, SEGMENT).to_string()
 }
 
-fn json_response(response: Response, allowed: &[u16]) -> Result<Value, ProviderError> {
+fn json_response(response: Response, allowed: &[u16]) -> Result<Value, VmError> {
     if !allowed.contains(&response.status) {
         return Err(status_error(&response));
     }
     serde_json::from_slice(&response.body).map_err(|_| error("invalid-response"))
 }
 
-fn status_error(response: &Response) -> ProviderError {
+fn status_error(response: &Response) -> VmError {
     error(match response.status {
         401 | 403 => "vm-unauthorized",
         409 => "vm-conflict",
@@ -315,7 +425,7 @@ fn status_error(response: &Response) -> ProviderError {
     })
 }
 
-fn artifact(response: Response, path: &str) -> Result<Value, ProviderError> {
+fn artifact(response: Response, path: &str) -> Result<Value, VmError> {
     let header = |name: &str| {
         response
             .headers
@@ -355,7 +465,7 @@ fn artifact(response: Response, path: &str) -> Result<Value, ProviderError> {
     Ok(json!({"path": path, "bytes": bytes, "sha256": sha256, "binary": true}))
 }
 
-fn map_http_error(failure: HttpError) -> ProviderError {
+fn map_http_error(failure: HttpError) -> VmError {
     error(match failure.code {
         HttpErrorCode::Denied | HttpErrorCode::HostCallLimit => "http-denied",
         HttpErrorCode::RequestTooLarge => "request-too-large",
@@ -372,42 +482,22 @@ fn map_http_error(failure: HttpError) -> ProviderError {
     })
 }
 
-fn error(code: &'static str) -> ProviderError {
-    ProviderError::new(code, code)
+fn run_with(
+    op: Operation,
+    input: Value,
+    base: &str,
+    send: impl FnMut(Request) -> Result<Response, HttpError>,
+    out: &mut Stdout,
+) -> Result<(), VmError> {
+    let result = invoke_with(op.id(), input, base, send)?;
+    // One bounded vm-runner response; no returned value side channel.
+    serde_json::to_writer(out, &result).map_err(|_| error("output-closed"))
 }
 
-fn schema(op: Operation) -> Value {
-    let name = json!({"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"});
-    let mut value = json!({"type": "object", "additionalProperties": false, "properties": {}});
-    match op {
-        Operation::Job => {
-            value["properties"] =
-                json!({"jobId": {"type": "string", "pattern": "^[A-Za-z0-9-]{1,128}$"}});
-            value["required"] = json!(["jobId"]);
-        }
-        Operation::Exec | Operation::Artifact => {
-            value["properties"] = json!({"profile": name, "name": name});
-            value["required"] = json!(["profile", "name"]);
-            match op {
-                Operation::Exec => {
-                    value["properties"]["argv"] = json!({"type": "array", "minItems": 1, "maxItems": 70, "items": {"type": "string", "maxLength": 24576}});
-                    value["properties"]["stdin"] = json!({"type": "string", "maxLength": 24576});
-                    value["properties"]["deadlineMs"] =
-                        json!({"type": "integer", "minimum": 1000, "maximum": 25000});
-                    value["required"] = json!(["profile", "name", "argv", "deadlineMs"]);
-                }
-                Operation::Artifact => {
-                    value["properties"]["path"] =
-                        json!({"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"})
-                }
-                Operation::Job => unreachable!(),
-            }
-        }
-    }
-    value
+#[allow(unsafe_code)]
+mod export {
+    dekopon_provider_sdk::export!(super::Vm);
 }
-
-dekopon_provider_sdk::export_provider_with_cli!(Vm, bindings);
 
 #[cfg(test)]
 mod tests;

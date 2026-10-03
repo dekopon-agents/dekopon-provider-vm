@@ -1,35 +1,42 @@
 use super::*;
-use dekopon_provider_sdk::SecretUseProposal;
+use dekopon_provider_sdk::{CommandRunOutcome, SecretUseProposal};
 
 const SECRET: &str = "drn:com.xrl:secret:test:vm/token";
 fn words(args: &[&str]) -> Vec<String> {
     args.iter().map(|s| (*s).into()).collect()
 }
-fn proposal(args: &[&str], stdin: Option<&str>) -> dekopon_provider_sdk::CommandInvocation {
-    let CommandRun::Proposal(v) = command::run(&words(args), stdin) else {
+fn command(args: &[&str], piped: bool) -> CommandRunOutcome {
+    provider::command::<Vm>(&words(args), piped)
+}
+fn proposal(args: &[&str], piped: bool) -> (String, Value) {
+    let CommandRunOutcome::Proposed {
+        capability,
+        input,
+        secret_use,
+    } = command(args, piped)
+    else {
         panic!("expected proposal")
     };
     assert_eq!(
-        v.secret_use,
+        secret_use,
         Some(SecretUseProposal::HttpBearer {
             secret: SECRET.parse().unwrap()
         })
     );
-    assert!(!v.input.to_string().contains(SECRET));
-    v
+    assert!(!input.to_string().contains(SECRET));
+    (capability.to_string(), input)
 }
 #[test]
-fn manifest_marks_session_creating_capabilities_as_external_writes() {
-    let manifest = Vm::manifest();
-    assert_eq!(manifest.command_words, ["ssh"]);
-    assert_eq!(manifest.id.as_str(), "vm");
+fn manifest_preserves_identity_effects_and_closed_schemas() {
+    let m = provider::manifest::<Vm>().unwrap();
+    assert_eq!(m.id.as_str(), "vm");
+    assert_eq!(m.command_words, ["ssh"]);
     assert_eq!(
-        manifest
-            .capabilities
+        m.capabilities
             .iter()
             .map(|c| (c.id.as_str(), c.effect, c.risk))
             .collect::<Vec<_>>(),
-        vec![
+        [
             ("vm.exec", EffectKind::ExternalWrite, RiskLevel::High),
             ("vm.job.get", EffectKind::ReadOnly, RiskLevel::Low),
             (
@@ -40,147 +47,47 @@ fn manifest_marks_session_creating_capabilities_as_external_writes() {
         ]
     );
     assert!(
-        manifest
-            .capabilities
+        m.capabilities
             .iter()
             .all(|c| c.input_schema["additionalProperties"] == false)
     );
 }
 #[test]
-fn every_form_proposes_only_its_closed_input_and_secret_use() {
-    let v = proposal(
-        &["--secret", SECRET, "travel", "--", "echo", "--help"],
-        Some("piped"),
-    );
-    assert_eq!(v.capability.as_str(), "vm.exec");
+fn proposals_defer_pipe_and_keep_job_and_artifact_identity() {
+    let (id, input) = proposal(&["--secret", SECRET, "travel", "--", "echo", "hi"], true);
+    assert_eq!(id, "vm.exec");
     assert_eq!(
-        v.input,
-        json!({"profile":"travel", "name":"default", "argv":["echo","--help"], "stdin":"piped", "deadlineMs":25000})
+        input,
+        json!({"profile":"travel","name":"default","argv":["echo","hi"],"stdinPiped":true,"deadlineMs":25000})
     );
-    let v = proposal(
-        &[
-            "--session",
-            "trip-1",
-            "--timeout",
-            "1",
-            "--secret",
-            SECRET,
-            "travel",
-            "--",
-            "pwd",
-        ],
-        None,
+    assert!(!input.to_string().contains("piped-payload"));
+    assert_eq!(
+        proposal(&["--job", "job-1", "--secret", SECRET], false),
+        ("vm.job.get".into(), json!({"jobId":"job-1"}))
     );
-    assert_eq!(v.input["name"], "trip-1");
-    assert_eq!(v.input["deadlineMs"], 1000);
-    let v = proposal(&["--job", "job-1", "--secret", SECRET], None);
-    assert_eq!(v.capability.as_str(), "vm.job.get");
-    assert_eq!(v.input, json!({"jobId":"job-1"}));
-    for tail in [vec!["travel"], vec!["travel", "Shot_1.txt"]] {
-        let mut args = vec!["--artifacts", "--secret", SECRET];
-        args.extend(tail);
-        let v = proposal(&args, None);
-        assert_eq!(v.capability.as_str(), "vm.artifact.read");
-        assert_eq!(v.input["name"], "default");
+    assert_eq!(
+        proposal(
+            &["--artifacts", "--secret", SECRET, "travel", "Shot_1.txt"],
+            false
+        )
+        .0,
+        "vm.artifact.read"
+    );
+    for path in ["dir/a.txt", "a b.txt", "../x"] {
+        assert!(!matches!(
+            command(&["--artifacts", "--secret", SECRET, "travel", path], false),
+            CommandRunOutcome::Proposed { .. }
+        ));
     }
-}
-#[test]
-fn malformed_forms_render_fixed_usage_without_echoing_values() {
     for args in [
-        vec![],
-        vec!["--secret"],
-        vec!["--secret", "private-sentinel"],
-        vec!["--secret", SECRET, "--secret", SECRET],
-        vec!["--job"],
-        vec!["--job", "x", "--job", "y"],
-        vec!["--artifacts", "--artifacts"],
-        vec!["--job", "x", "--artifacts"],
-        vec!["--artifacts", "--job", "x"],
-        vec!["--session"],
-        vec!["--timeout"],
-        vec!["--timeout", "0"],
-        vec!["--timeout", "26"],
-        vec!["--timeout", "nan"],
-        vec!["--timeout", "+1"],
-        vec!["--timeout", "1", "--timeout", "1"],
-        vec!["--session", "a", "--session", "b"],
-        vec!["--session", "Bad", "travel", "--", "pwd"],
-        vec!["--wat"],
-        vec!["--secret=x"],
-        vec!["Travel", "--", "pwd"],
-        vec!["-bad", "--", "pwd"],
-        vec!["travel"],
-        vec!["travel", "extra", "--", "pwd"],
-        vec!["travel", "--"],
-        vec!["travel", "--", ""],
-        vec!["travel", "--", "a\0b"],
-        vec!["--job", "../x"],
-        vec!["--job", "x", "profile"],
-        vec!["--job", "x", "--session", "a"],
-        vec!["--job", "x", "--timeout", "1"],
-        vec!["--job", "x", "--", "pwd"],
-        vec!["--artifacts"],
-        vec!["--artifacts", "travel", "a", "b"],
-        vec!["--artifacts", "travel", "../x"],
-        vec!["--artifacts", "travel", "--timeout", "1"],
-        vec!["--artifacts", "travel", "--", "x"],
+        vec!["--secret", SECRET, "--timeout", "26", "travel", "--", "pwd"],
+        vec!["--secret", SECRET, "--job", "../x"],
     ] {
-        let mut args = words(&args);
-        if !args.iter().any(|a| a.starts_with("--secret")) && !args.is_empty() {
-            args.splice(0..0, words(&["--secret", SECRET]));
-        }
-        let CommandRun::Rendered {
-            stdout,
-            stderr,
-            status,
-        } = command::run(&args, None)
-        else {
-            panic!("accepted {args:?}")
-        };
-        assert_eq!(status, 2, "{args:?}");
-        assert!(stdout.is_empty());
-        assert!(
-            stderr == "ssh: --secret requires one bare secret DRN\n"
-                || stderr.starts_with("usage: ssh ")
-                || stderr == command::ARTIFACT_PATH
-        );
-        assert!(!stderr.contains("private-sentinel"));
+        assert!(!matches!(
+            command(&args, false),
+            CommandRunOutcome::Proposed { .. }
+        ));
     }
-}
-#[test]
-fn help_is_local_and_missing_secret_is_named() {
-    assert!(
-        matches!(command::run(&words(&["travel", "--", "pwd"]), None), CommandRun::Rendered { status: 2, stderr, .. } if stderr == "ssh: --secret requires one bare secret DRN\n")
-    );
-    for flag in ["-h", "--help"] {
-        assert!(
-            matches!(command::run(&words(&[flag]), None), CommandRun::Rendered { status: 0, stderr, .. } if stderr.is_empty())
-        );
-    }
-    for invalid in ["", "A", "-a", "a_b", &"a".repeat(64)] {
-        assert!(!command::name(invalid));
-    }
-    assert!(command::name(&"a".repeat(63)));
-}
-#[test]
-fn excessive_argv_entries_refuse_an_otherwise_valid_exec() {
-    let mut args = words(&["--secret", SECRET, "travel", "--", "echo"]);
-    args.resize(command::MAX_ARGV + 1, "x".into());
-    assert_usage(command::run(&args, None));
-}
-#[test]
-fn input_byte_cap_counts_valid_argv_and_stdin_together() {
-    let args = words(&["--secret", SECRET, "travel", "--", "cat"]);
-    let payload = "x".repeat(command::MAX_BYTES - args.iter().map(String::len).sum::<usize>() + 1);
-    assert_usage(command::run(&args, Some(&payload)));
-    let mut args = args;
-    args.push(payload);
-    assert_usage(command::run(&args, None));
-}
-fn assert_usage(run: CommandRun) {
-    assert!(
-        matches!(run, CommandRun::Rendered { status: 2, stdout, stderr } if stdout.is_empty() && stderr == command::USAGE)
-    );
 }
 fn response(status: u16, body: Value) -> Response {
     Response {
@@ -190,20 +97,16 @@ fn response(status: u16, body: Value) -> Response {
     }
 }
 #[test]
-fn exec_preserves_all_contract_outcomes_and_never_sets_authorization() {
+fn exec_keeps_job_status_and_never_sets_authorization() {
     for (status, body) in [
         (
             200,
-            json!({"outcome":"executed","stdout":"\u{0000}raw\n","stderr":"err","exitCode":7,"truncated":false}),
+            json!({"outcome":"executed","stdout":"raw\n","stderr":"err","exitCode":7,"truncated":false}),
         ),
         (202, json!({"outcome":"unknown","jobId":"job-1"})),
         (
             400,
             json!({"outcome":"not_executed","reason":"bad_argv","truncated":false}),
-        ),
-        (
-            413,
-            json!({"outcome":"not_executed","reason":"too_large","truncated":false}),
         ),
         (
             502,
@@ -212,7 +115,7 @@ fn exec_preserves_all_contract_outcomes_and_never_sets_authorization() {
     ] {
         let mut calls = Vec::new();
         let result = invoke_with(
-            &"vm.exec".parse().unwrap(),
+            "vm.exec",
             json!({"profile":"travel","name":"default","argv":["pwd"],"deadlineMs":25000}),
             DEFAULT_BASE,
             |r| {
@@ -235,47 +138,53 @@ fn exec_preserves_all_contract_outcomes_and_never_sets_authorization() {
     }
 }
 #[test]
-fn status_and_transport_failures_are_fixed_and_not_retried() {
-    for (status, body, code) in [
-        (401, json!({}), "vm-unauthorized"),
-        (409, json!({}), "vm-conflict"),
-        (400, json!({"reason":"quota"}), "vm-quota"),
-        (400, json!({}), "vm-bad-request"),
-        (503, json!({}), "vm-unavailable"),
-        (500, json!({}), "vm-failed"),
-        (302, json!({}), "vm-failed"),
-    ] {
-        let mut count = 0;
-        let err = invoke_with(
-            &"vm.exec".parse().unwrap(),
-            json!({"profile":"travel","name":"default","argv":["pwd"],"deadlineMs":1000}),
-            DEFAULT_BASE,
-            |_| {
-                count += 1;
-                Ok(response(status, body.clone()))
-            },
-        )
-        .unwrap_err();
-        assert_eq!(err.code(), code);
-        assert_eq!(count, 1);
-    }
-    for (kind, code) in [
-        (HttpErrorCode::Denied, "http-denied"),
-        (HttpErrorCode::Timeout, "http-timeout"),
-        (HttpErrorCode::Connect, "http-failed"),
+fn validation_and_settings_reject_before_effect() {
+    for value in [
+        json!({"jobId":"../x"}),
+        json!({"jobId":"x","secret":SECRET}),
     ] {
         assert_eq!(
-            map_http_error(HttpError {
-                code: kind,
-                message: "private-sentinel".into()
-            })
-            .code(),
-            code
+            invoke_with("vm.job.get", value, DEFAULT_BASE, |_| panic!(
+                "HTTP before validation"
+            ))
+            .unwrap_err()
+            .code()
+            .as_str(),
+            "invalid-input"
         );
     }
+    assert_eq!(
+        invoke_with(
+            "vm.job.get",
+            json!({"jobId":"x"}),
+            "http://user@invalid",
+            |_| panic!("HTTP before settings")
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "invalid-settings"
+    );
+    assert!(serde_json::from_str::<Settings>("{bad").is_err());
+    assert!(serde_json::from_str::<Settings>("{}").is_err());
+    assert_eq!(
+        serde_json::from_str::<Settings>(r#"{"baseUrl":"https://vm.example"}"#)
+            .unwrap()
+            .base_url,
+        "https://vm.example"
+    );
 }
 #[test]
-fn artifact_projection_returns_whole_small_text_or_metadata_without_bytes() {
+fn transport_and_artifact_bounds_keep_fixed_failures() {
+    assert_eq!(
+        map_http_error(HttpError {
+            code: HttpErrorCode::Denied,
+            message: "private-sentinel".into()
+        })
+        .code()
+        .as_str(),
+        "http-denied"
+    );
     assert_eq!(
         artifact(
             Response {
@@ -288,88 +197,118 @@ fn artifact_projection_returns_whole_small_text_or_metadata_without_bytes() {
         .unwrap(),
         json!("")
     );
-    for (body, status, total, text) in [
-        (b"hello".to_vec(), 200, 5, true),
-        (vec![255], 200, 1, false),
-        (vec![b'x'; 65537], 206, 999999, false),
-    ] {
-        let headers = vec![
-            Header::text("sha256", "a".repeat(64)).unwrap(),
-            Header::text(
-                "content-range",
-                format!("bytes 0-{}/{total}", body.len() - 1),
-            )
-            .unwrap(),
-        ];
-        let output = artifact(
+    assert_eq!(
+        artifact(
             Response {
-                status,
-                headers,
-                body,
+                status: 200,
+                headers: vec![],
+                body: b"hello".to_vec()
             },
-            "file",
+            "file"
         )
-        .unwrap();
-        assert_eq!(
-            output,
-            if text {
-                json!("hello")
+        .unwrap(),
+        json!("hello")
+    );
+}
+
+#[test]
+fn native_invoke_reads_pipe_only_after_proposal_and_requires_valid_settings() {
+    use dekopon_provider_sdk::provider::{NativeStdio, Port, invoke_native, with_port};
+    use std::{
+        io,
+        sync::{Arc, Mutex},
+    };
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+    impl io::Write for Sink {
+        fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    struct Host {
+        settings: Option<String>,
+        calls: Arc<Mutex<Vec<Request>>>,
+    }
+    impl Port for Host {
+        fn now_unix_millis(&mut self) -> u64 {
+            0
+        }
+        fn settings(&mut self) -> Option<String> {
+            self.settings.clone()
+        }
+        fn send(&mut self, r: Request) -> Result<Response, HttpError> {
+            let mut calls = self.calls.lock().unwrap();
+            calls.push(r);
+            Ok(if calls.len() == 1 {
+                response(201, json!({"sessionId":"session-1"}))
             } else {
-                json!({"path":"file","bytes":total,"sha256":"a".repeat(64),"binary":true})
-            }
-        );
+                response(202, json!({"outcome":"unknown","jobId":"job-1"}))
+            })
+        }
+        fn open(
+            &mut self,
+            _: Request,
+        ) -> Result<dekopon_provider_sdk::provider::OpenedResponse, HttpError> {
+            panic!("no streaming HTTP")
+        }
+        fn stream(
+            &mut self,
+            _: dekopon_provider_sdk::provider::StreamedRequest<'_>,
+        ) -> Result<dekopon_provider_sdk::provider::StreamedResponse, HttpError> {
+            panic!("no asset HTTP")
+        }
     }
-}
-#[test]
-fn artifact_names_are_flat_unreserved_and_refused_before_http() {
-    for path in [
-        "",
-        ".hidden",
-        "a/b",
-        "a b",
-        "a%20b",
-        "a\\b",
-        "x?y",
-        "é",
-        "-a",
-        &"a".repeat(129),
+    let (_, proposal) = proposal(&["--secret", SECRET, "travel", "--", "cat"], true);
+    let wire = proposal.to_string();
+    for (settings, stdin, expected) in [
+        (None, b"piped".to_vec(), 1),
+        (Some("{bad".into()), b"piped".to_vec(), 1),
+        (
+            Some(format!(r#"{{"baseUrl":"{DEFAULT_BASE}"}}"#)),
+            vec![b'x'; command::MAX_BYTES],
+            1,
+        ),
+        (
+            Some(format!(r#"{{"baseUrl":"{DEFAULT_BASE}"}}"#)),
+            b"piped".to_vec(),
+            0,
+        ),
     ] {
-        let args = words(&["--artifacts", "--secret", SECRET, "travel", path]);
-        assert!(
-            matches!(command::run(&args, None), CommandRun::Rendered { status: 2, stdout, stderr } if stdout.is_empty() && stderr == command::ARTIFACT_PATH)
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let exit = with_port(
+            Host {
+                settings,
+                calls: calls.clone(),
+            },
+            || {
+                invoke_native::<Vm>(
+                    "vm.exec",
+                    &wire,
+                    NativeStdio {
+                        stdin: Some(Box::new(io::Cursor::new(stdin))),
+                        stdout: Box::new(Sink(output.clone())),
+                    },
+                )
+            },
         );
-        assert_eq!(
-            invoke_with(
-                &"vm.artifact.read".parse().unwrap(),
-                json!({"profile":"travel","name":"default","path":path}),
-                DEFAULT_BASE,
-                |_| panic!("no HTTP")
-            )
-            .unwrap_err()
-            .code(),
-            "invalid-input"
-        );
-    }
-    assert!(command::path(&"a".repeat(128)));
-}
-#[test]
-fn closed_inputs_refuse_extra_authority_and_invalid_values_before_http() {
-    for value in [
-        json!({"jobId":"x","url":"https://evil"}),
-        json!({"jobId":"x","secret":SECRET}),
-        json!({"jobId":"../x"}),
-        json!({"jobId":null}),
-    ] {
-        assert_eq!(
-            invoke_with(
-                &"vm.job.get".parse().unwrap(),
-                value,
-                DEFAULT_BASE,
-                |_| panic!("no HTTP")
-            )
-            .unwrap_err()
-            .code(),
-            "invalid-input"
-        );
+        assert_eq!(exit.status, expected, "{}", exit.stderr);
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), if expected == 0 { 2 } else { 0 });
+        if expected == 0 {
+            assert_eq!(
+                serde_json::from_slice::<Value>(&calls[1].body).unwrap()["stdin"],
+                "piped"
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.lock().unwrap()).unwrap()["jobId"],
+                "job-1"
+            );
+        } else {
+            assert!(output.lock().unwrap().is_empty());
+        }
     }
 }

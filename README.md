@@ -22,23 +22,24 @@ help renders stdout at exit 0. Options take separate values, at most once.
 | `vm.job.get` | ReadOnly / Low | get job |
 | `vm.artifact.read` | ExternalWrite / Low | create-or-get session, then list/read |
 
-Exec proposes `{profile,name,argv,stdin?,deadlineMs}`; jobs `{jobId}`; artifacts
+Exec proposes `{profile,name,argv,stdinPiped?,deadlineMs}`; the bounded UTF-8 stdin is read only during authorized invoke, before session creation. Jobs `{jobId}`; artifacts
 `{profile,name,path?}`. Schemas are closed. Secret DRNs travel only beside input as
 `secretUse.httpBearer`: neither token nor Authorization header is available to the
 provider. The broker requires both a Cedar `secret.use` grant and a private-map binding.
 `--secret` is mandatory; agent instructions must supply the public DRN.
 
-Owner `providerSettings.vm.baseUrl` defaults to
-`https://vm-runner.vm-runner.svc.cluster.local:8443`. No argv or invocation field
-selects a URL. Only broker `allowedHosts` grants destinations. The component imports
-`dekopon:http/client@1.1.0` and `dekopon:settings/config@0.1.0`; settings are available
-only during invoke. Asset WIT is a type dependency, not ambient authority.
+Owner `providerSettings.vm.baseUrl` is required (the Pi config sets it to
+`https://vm-runner.vm-runner.svc.cluster.local:8443`). Missing or malformed settings
+fail before any VM effect. No argv or invocation field selects a URL. Only broker
+`allowedHosts` grants destinations. The component imports SDK-owned HTTP, settings
+and stdio interfaces; settings are available only during invoke. Asset WIT is a type
+dependency, not ambient authority.
 
 Exec/job JSON passes through, including `not_executed` on documented 400/413/502
 responses and `unknown` + `jobId` on 202. Poll explicitly; nothing retries.
-stdout/stderr remain unchanged; vm-runner caps each at 64 KiB. Artifact reads accept
+The response is JSON on stdout, with fixed failures on stderr; vm-runner caps each embedded stream at 64 KiB. Artifact reads accept
 only flat names matching `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`, sent literally:
-broker 0.22 intentionally refuses `%` in credentialed paths. Other names render
+the broker refuses `%` in credentialed paths. Other names render
 exit 2 with guidance to copy the file to a flat name under `/artifacts` first,
 for example `ssh --secret DRN PROFILE -- cp 'dir/a b.png' /artifacts/shot.png`.
 Listing still shows every path. Reads request bytes 0–65536: complete
@@ -49,7 +50,7 @@ Other statuses produce fixed `vm-unauthorized`, `vm-conflict`, `vm-quota`,
 `vm-bad-request`, `vm-unavailable` or `vm-failed` errors. Transport failures use the
 broker HTTP error codes. All returned content is untrusted.
 
-See `examples/broker.yaml` and `examples/policies.cedar` for 0.22 configuration.
+See `examples/broker.yaml` and `examples/policies.cedar` for broker configuration.
 The port must appear in allowedHosts: a bare hostname grants HTTPS port 443, not 8443.
 Configure broker-only CA roots and non-public HTTPS access for cluster DNS.
 The whole-invocation `timeoutMs` must cover the cold-session boot budget plus
