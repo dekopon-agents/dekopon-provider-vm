@@ -1,5 +1,6 @@
-use dekopon_provider_sdk::{CommandInvocation, CommandRun, SecretDrn, SecretUseProposal};
-use serde_json::json;
+use crate::{Artifact, ArtifactInput, Exec, ExecInput, Job, JobInput, Vm};
+use dekopon_provider_sdk::provider::{Proposal, Usage};
+use dekopon_provider_sdk::{SecretDrn, SecretUseProposal};
 
 use crate::Operation;
 
@@ -26,19 +27,17 @@ pub(crate) fn path(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
-pub(crate) fn run(argv: &[String], stdin: Option<&str>) -> CommandRun {
-    parse(argv, stdin).unwrap_or_else(|message| CommandRun::rendered_error(message, 2))
+pub(crate) fn propose(argv: &[String], stdin_piped: bool) -> Result<Proposal<Vm>, Usage> {
+    parse(argv, stdin_piped).map_err(Usage::new)
 }
 
-fn parse(argv: &[String], stdin: Option<&str>) -> Result<CommandRun, &'static str> {
-    if argv.len() > MAX_ARGV
-        || argv
-            .iter()
-            .map(String::len)
-            .chain(stdin.map(str::len))
-            .try_fold(0usize, usize::checked_add)
-            .is_none_or(|n| n > MAX_BYTES)
-    {
+fn parse(argv: &[String], stdin_piped: bool) -> Result<Proposal<Vm>, &'static str> {
+    let argv_bytes = argv
+        .iter()
+        .map(String::len)
+        .try_fold(0usize, usize::checked_add)
+        .ok_or(USAGE)?;
+    if argv.len() > MAX_ARGV || argv_bytes > MAX_BYTES {
         return Err(USAGE);
     }
     let mut index = 0;
@@ -52,7 +51,7 @@ fn parse(argv: &[String], stdin: Option<&str>) -> Result<CommandRun, &'static st
     while let Some(arg) = argv.get(index) {
         index += 1;
         match arg.as_str() {
-            "-h" | "--help" => return Ok(CommandRun::rendered(HELP, 0)),
+            "-h" | "--help" => return Err(HELP),
             "--" => {
                 exec = Some(&argv[index..]);
                 break;
@@ -121,13 +120,13 @@ fn parse(argv: &[String], stdin: Option<&str>) -> Result<CommandRun, &'static st
     if !self::name(name) {
         return Err(USAGE);
     }
-    let input = match op {
+    let proposal = match op {
         Operation::Job => {
             if session.is_some() || timeout.is_some() || exec.is_some() || !positional.is_empty() {
                 return Err(USAGE);
             }
             let id = job.filter(|s| job_id(s)).ok_or(USAGE)?;
-            json!({"jobId": id})
+            Proposal::to::<Job>(JobInput { job_id: id.into() })
         }
         Operation::Exec => {
             if positional.len() != 1 || !self::name(positional[0]) {
@@ -138,11 +137,14 @@ fn parse(argv: &[String], stdin: Option<&str>) -> Result<CommandRun, &'static st
                     !a.is_empty() && !a[0].is_empty() && a.iter().all(|s| !s.contains('\0'))
                 })
                 .ok_or(USAGE)?;
-            let mut v = json!({"profile": positional[0], "name": name, "argv": args, "deadlineMs": timeout.unwrap_or(25) * 1000});
-            if let Some(stdin) = stdin {
-                v["stdin"] = stdin.into();
-            }
-            v
+            Proposal::to::<Exec>(ExecInput {
+                profile: positional[0].into(),
+                name: name.into(),
+                argv: args.to_vec(),
+                stdin_piped,
+                stdin_budget: stdin_piped.then_some(MAX_BYTES - argv_bytes),
+                deadline_ms: timeout.unwrap_or(25) * 1000,
+            })
         }
         Operation::Artifact => {
             if timeout.is_some()
@@ -152,21 +154,23 @@ fn parse(argv: &[String], stdin: Option<&str>) -> Result<CommandRun, &'static st
             {
                 return Err(USAGE);
             }
-            let mut v = json!({"profile": positional[0], "name": name});
-            if let Some(p) = positional.get(1) {
-                if !path(p) {
-                    return Err(ARTIFACT_PATH);
-                }
-                v["path"] = (*p).into();
-            }
-            v
+            let path = positional
+                .get(1)
+                .map(|p| {
+                    if !self::path(p) {
+                        return Err(ARTIFACT_PATH);
+                    }
+                    Ok((*p).to_owned())
+                })
+                .transpose()?;
+            Proposal::to::<Artifact>(ArtifactInput {
+                profile: positional[0].into(),
+                name: name.into(),
+                path,
+            })
         }
     };
-    Ok(CommandRun::Proposal(CommandInvocation {
-        capability: op.id().parse().expect("static capability ID"),
-        input,
-        secret_use: Some(SecretUseProposal::HttpBearer { secret }),
-    }))
+    Ok(proposal.with_secret_use(SecretUseProposal::HttpBearer { secret }))
 }
 
 fn take<'a>(args: &'a [String], index: &mut usize) -> Result<&'a str, &'static str> {
