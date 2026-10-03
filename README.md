@@ -22,7 +22,7 @@ help renders stdout at exit 0. Options take separate values, at most once.
 | `vm.job.get` | ReadOnly / Low | get job |
 | `vm.artifact.read` | ExternalWrite / Low | create-or-get session, then list/read |
 
-Exec proposes `{profile,name,argv,stdinPiped?,deadlineMs}`; the bounded UTF-8 stdin is read only during authorized invoke, before session creation. Jobs `{jobId}`; artifacts
+Exec proposes `{profile,name,argv,stdinPiped?,stdinBudget?,deadlineMs}`; `stdinBudget` is set only for a piped argv proposal to preserve the 24,576-byte combined argv-and-stdin cap without carrying pipe bytes. The bounded UTF-8 stdin is read only during authorized invoke, before session creation. Jobs `{jobId}`; artifacts
 `{profile,name,path?}`. Schemas are closed. Secret DRNs travel only beside input as
 `secretUse.httpBearer`: neither token nor Authorization header is available to the
 provider. The broker requires both a Cedar `secret.use` grant and a private-map binding.

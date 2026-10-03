@@ -54,11 +54,12 @@ fn manifest_preserves_identity_effects_and_closed_schemas() {
 }
 #[test]
 fn proposals_defer_pipe_and_keep_job_and_artifact_identity() {
-    let (id, input) = proposal(&["--secret", SECRET, "travel", "--", "echo", "hi"], true);
+    let args = ["--secret", SECRET, "travel", "--", "echo", "hi"];
+    let (id, input) = proposal(&args, true);
     assert_eq!(id, "vm.exec");
     assert_eq!(
         input,
-        json!({"profile":"travel","name":"default","argv":["echo","hi"],"stdinPiped":true,"deadlineMs":25000})
+        json!({"profile":"travel","name":"default","argv":["echo","hi"],"stdinPiped":true,"stdinBudget":command::MAX_BYTES - args.iter().map(|a| a.len()).sum::<usize>(),"deadlineMs":25000})
     );
     assert!(!input.to_string().contains("piped-payload"));
     assert_eq!(
@@ -165,6 +166,21 @@ fn validation_and_settings_reject_before_effect() {
         .as_str(),
         "invalid-settings"
     );
+    for value in [
+        json!({"profile":"travel","name":"default","argv":["cat"],"deadlineMs":25000,"stdinPiped":true}),
+        json!({"profile":"travel","name":"default","argv":["cat"],"deadlineMs":25000,"stdinPiped":true,"stdinBudget":command::MAX_BYTES}),
+        json!({"profile":"travel","name":"default","argv":["cat"],"deadlineMs":25000,"stdinBudget":1}),
+    ] {
+        assert_eq!(
+            invoke_with("vm.exec", value, DEFAULT_BASE, |_| panic!(
+                "HTTP before budget validation"
+            ))
+            .unwrap_err()
+            .code()
+            .as_str(),
+            "invalid-input"
+        );
+    }
     assert!(serde_json::from_str::<Settings>("{bad").is_err());
     assert!(serde_json::from_str::<Settings>("{}").is_err());
     assert_eq!(
@@ -311,4 +327,39 @@ fn native_invoke_reads_pipe_only_after_proposal_and_requires_valid_settings() {
             assert!(output.lock().unwrap().is_empty());
         }
     }
+    let argv = ["--secret", SECRET, "travel", "--", "cat"];
+    let full_argv_bytes = argv.iter().map(|s| s.len()).sum::<usize>();
+    let (_, proposal) = self::proposal(&argv, true);
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let exit = with_port(
+        Host {
+            settings: Some(format!(r#"{{"baseUrl":"{DEFAULT_BASE}"}}"#)),
+            calls: calls.clone(),
+        },
+        || {
+            invoke_native::<Vm>(
+                "vm.exec",
+                &proposal.to_string(),
+                NativeStdio {
+                    stdin: Some(Box::new(io::Cursor::new(vec![
+                        b'x';
+                        command::MAX_BYTES
+                            - full_argv_bytes
+                            + 1
+                    ]))),
+                    stdout: Box::new(Sink(output.clone())),
+                },
+            )
+        },
+    );
+    assert_ne!(
+        exit.status, 0,
+        "argv + piped stdin must stay within the original combined limit"
+    );
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "no session before rejecting the oversized pipe"
+    );
+    assert!(output.lock().unwrap().is_empty());
 }

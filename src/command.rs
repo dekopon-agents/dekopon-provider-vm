@@ -32,13 +32,12 @@ pub(crate) fn propose(argv: &[String], stdin_piped: bool) -> Result<Proposal<Vm>
 }
 
 fn parse(argv: &[String], stdin_piped: bool) -> Result<Proposal<Vm>, &'static str> {
-    if argv.len() > MAX_ARGV
-        || argv
-            .iter()
-            .map(String::len)
-            .try_fold(0usize, usize::checked_add)
-            .is_none_or(|n| n > MAX_BYTES)
-    {
+    let argv_bytes = argv
+        .iter()
+        .map(String::len)
+        .try_fold(0usize, usize::checked_add)
+        .ok_or(USAGE)?;
+    if argv.len() > MAX_ARGV || argv_bytes > MAX_BYTES {
         return Err(USAGE);
     }
     let mut index = 0;
@@ -143,6 +142,7 @@ fn parse(argv: &[String], stdin_piped: bool) -> Result<Proposal<Vm>, &'static st
                 name: name.into(),
                 argv: args.to_vec(),
                 stdin_piped,
+                stdin_budget: stdin_piped.then_some(MAX_BYTES - argv_bytes),
                 deadline_ms: timeout.unwrap_or(25) * 1000,
             })
         }

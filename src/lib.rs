@@ -213,6 +213,9 @@ pub struct ExecInput {
     pub(crate) argv: Vec<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) stdin_piped: bool,
+    /// Remaining original argv + stdin byte allowance. Only an argv proposal sets this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) stdin_budget: Option<usize>,
     #[schemars(range(min = 1000, max = 25000))]
     pub(crate) deadline_ms: u32,
 }
@@ -256,6 +259,10 @@ fn input(op: Operation, value: Value) -> Result<Input, VmError> {
                 || !(1_000..=25_000).contains(&v.deadline_ms)
                 || v.argv.iter().any(|a| a.contains('\0'))
                 || v.argv.iter().map(String::len).sum::<usize>() > command::MAX_BYTES
+                || (v.stdin_piped != v.stdin_budget.is_some())
+                || v.stdin_budget.is_some_and(|budget| {
+                    budget > command::MAX_BYTES - v.argv.iter().map(String::len).sum::<usize>()
+                })
             {
                 return Err(invalid());
             }
@@ -299,14 +306,14 @@ fn invoke_with(
     // Read and validate bounded piped data before the first VM effect (session creation).
     let stdin_text = if let Input::Exec(v) = &input {
         if v.stdin_piped {
-            let argv_bytes = v.argv.iter().map(String::len).sum::<usize>();
+            let budget = v.stdin_budget.ok_or_else(|| error("invalid-input"))?;
             let mut raw = Vec::new();
             provider::stdin()
                 .ok_or_else(|| error("invalid-input"))?
-                .take((command::MAX_BYTES - argv_bytes + 1) as u64)
+                .take((budget + 1) as u64)
                 .read_to_end(&mut raw)
                 .map_err(|_| error("invalid-input"))?;
-            if raw.len() > command::MAX_BYTES - argv_bytes {
+            if raw.len() > budget {
                 return Err(error("invalid-input"));
             }
             Some(String::from_utf8(raw).map_err(|_| error("invalid-input"))?)
