@@ -252,6 +252,12 @@ fn native_invoke_reads_pipe_only_after_proposal_and_requires_valid_settings() {
         fn now_unix_millis(&mut self) -> u64 {
             0
         }
+        fn now_nanos(&mut self) -> u64 {
+            0
+        }
+        fn fill_random(&mut self, bytes: &mut [u8]) {
+            bytes.fill(0);
+        }
         fn settings(&mut self) -> Option<String> {
             self.settings.clone()
         }
@@ -263,12 +269,6 @@ fn native_invoke_reads_pipe_only_after_proposal_and_requires_valid_settings() {
             } else {
                 response(202, json!({"outcome":"unknown","jobId":"job-1"}))
             })
-        }
-        fn open(
-            &mut self,
-            _: Request,
-        ) -> Result<dekopon_provider_sdk::provider::OpenedResponse, HttpError> {
-            panic!("no streaming HTTP")
         }
         fn stream(
             &mut self,
