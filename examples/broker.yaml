@@ -36,7 +36,12 @@ capabilities:
           http:
             allowedMethods: [GET]
             maxRequests: 1
-      vm.artifact.read: {}
+      vm.artifact.read:
+        constraints:
+          asset:
+            attach: true
+          http:
+            maxResponseBytes: 8650752
 
 # Owner-only secret-map fragment; never put token bytes in providerSettings.
 # Separate bindings scope each capability to its methods and route family.

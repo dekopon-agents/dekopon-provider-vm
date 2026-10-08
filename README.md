@@ -20,7 +20,7 @@ help renders stdout at exit 0. Options take separate values, at most once.
 |---|---|---|
 | `vm.exec` | ExternalWrite / High | create-or-get session, then exec |
 | `vm.job.get` | ReadOnly / Low | get job |
-| `vm.artifact.read` | ExternalWrite / Low | create-or-get session, then list/read |
+| `vm.artifact.read` | ExternalWrite / Low | create-or-get session, then list/read; `.png`/`.jpg`/`.jpeg` reads attach |
 
 Exec proposes `{profile,name,argv,stdinPiped?,stdinBudget?,deadlineMs}`; `stdinBudget` is set only for a piped argv proposal to preserve the 24,576-byte combined argv-and-stdin cap without carrying pipe bytes. The bounded UTF-8 stdin is read only during authorized invoke, before session creation. Jobs `{jobId}`; artifacts
 `{profile,name,path?}`. Schemas are closed. Secret DRNs travel only beside input as
@@ -45,7 +45,12 @@ for example `ssh --secret DRN PROFILE -- cp 'dir/a b.png' /artifacts/shot.png`.
 Listing still shows every path. Reads request bytes 0–65536: complete
 UTF-8 text up to 64 KiB returns as a JSON string; otherwise output is
 `{path,bytes,sha256,binary:true}`, without file contents. `bytes` is the complete size
-from Content-Range, not the prefix length. Lists return server JSON unchanged.
+from Content-Range, not the prefix length. A name ending `.png`, `.jpg` or `.jpeg`
+(any case) instead streams the full GET into a chat asset typed from the extension,
+copied 64 KiB at a time, and attaches it only when the bytes copied equal
+Content-Length and stay within the 8 MiB asset cap; output is the same metadata with
+`attached:true`. The capability then also needs the asset grant and an HTTP
+`maxResponseBytes` above 8 MiB. Lists return server JSON unchanged.
 Other statuses produce fixed `vm-unauthorized`, `vm-conflict`, `vm-quota`,
 `vm-bad-request`, `vm-unavailable` or `vm-failed` errors. Transport failures use the
 broker HTTP error codes. All returned content is untrusted.

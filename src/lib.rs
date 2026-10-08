@@ -1,8 +1,10 @@
 //! Broker-only imports deliberately prevent execution under a direct, non-broker host.
 
+use dekopon_provider_sdk::asset::{self, AssetError, AssetErrorCode, Encoding};
 use dekopon_provider_sdk::provider::{
-    self, Capability, Code, Failure, Header, Http, HttpError, HttpErrorCode, Proposal, Provider,
-    Request, Response, Settings as ProviderSettings, Stdout, Usage, method,
+    self, Assets, Capability, Code, Failure, Header, Http, HttpError, HttpErrorCode, Proposal,
+    Provider, Request, Response, Settings as ProviderSettings, Stdout, StreamedRequest, Usage,
+    method,
 };
 use dekopon_provider_sdk::{EffectKind, RiskLevel};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
@@ -10,13 +12,20 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::{fmt, io::Read};
+use std::{convert::Infallible, fmt, io::Read};
 
 mod command;
 
 #[cfg(test)]
 const DEFAULT_BASE: &str = "https://vm-runner.vm-runner.svc.cluster.local:8443";
 const TEXT_LIMIT: usize = 65_536;
+const CHUNK: usize = 65_536;
+const ASSET_LIMIT: u64 = 8 * 1024 * 1024;
+const ATTACH_TYPES: [(&str, &str); 3] = [
+    (".png", "image/png"),
+    (".jpg", "image/jpeg"),
+    (".jpeg", "image/jpeg"),
+];
 
 /// Broker-authorized VM provider.
 pub struct Vm;
@@ -185,14 +194,103 @@ capability!(
     RiskLevel::Low,
     JobInput
 );
-capability!(
-    Artifact,
-    "artifact.read",
-    "List or read jail artifacts.",
-    EffectKind::ExternalWrite,
-    RiskLevel::Low,
-    ArtifactInput
-);
+impl Capability for Artifact {
+    type Provider = Vm;
+    const NAME: &'static str = "artifact.read";
+    const DESCRIPTION: &'static str = "List or read jail artifacts.";
+    const EFFECT: EffectKind = EffectKind::ExternalWrite;
+    const RISK: RiskLevel = RiskLevel::Low;
+    type Input = ArtifactInput;
+    type Needs = (Http, Assets, ProviderSettings<Settings>);
+    type Error = VmError;
+    fn run(
+        input: Self::Input,
+        (http, assets, settings): Self::Needs,
+        out: &mut Stdout,
+    ) -> Result<(), VmError> {
+        run_with(
+            Operation::Artifact,
+            serde_json::to_value(input).map_err(|_| error("invalid-input"))?,
+            &settings.into_inner().base_url,
+            Host { http, assets },
+            out,
+        )
+    }
+}
+
+trait Transport {
+    type Handle;
+    type Writer;
+    fn send(&mut self, request: Request) -> Result<Response, HttpError>;
+    fn stream(&mut self, request: Request) -> Result<(u16, Vec<Header>, Self::Handle), HttpError>;
+    fn read(&mut self, handle: &Self::Handle, buffer: &mut [u8]) -> Result<usize, AssetError>;
+    fn allocate(&mut self, content_type: &str) -> Result<Self::Writer, AssetError>;
+    fn write_all(&mut self, writer: &Self::Writer, bytes: &[u8]) -> Result<(), AssetError>;
+    fn attach(&mut self, writer: Self::Writer) -> Result<(), AssetError>;
+}
+
+struct Host {
+    http: Http,
+    assets: Assets,
+}
+impl Transport for Host {
+    type Handle = asset::Handle;
+    type Writer = asset::Writer;
+    fn send(&mut self, request: Request) -> Result<Response, HttpError> {
+        self.http.send(request)
+    }
+    fn stream(&mut self, request: Request) -> Result<(u16, Vec<Header>, Self::Handle), HttpError> {
+        let response = self.http.stream(StreamedRequest {
+            method: request.method,
+            uri: request.uri,
+            headers: request.headers,
+            body: Vec::new(),
+        })?;
+        Ok((response.status, response.headers, response.body))
+    }
+    fn read(&mut self, handle: &Self::Handle, buffer: &mut [u8]) -> Result<usize, AssetError> {
+        handle.read(buffer)
+    }
+    fn allocate(&mut self, content_type: &str) -> Result<Self::Writer, AssetError> {
+        self.assets.allocate(content_type, Encoding::Identity)
+    }
+    fn write_all(&mut self, writer: &Self::Writer, bytes: &[u8]) -> Result<(), AssetError> {
+        writer.write_all(bytes)
+    }
+    fn attach(&mut self, writer: Self::Writer) -> Result<(), AssetError> {
+        self.assets.attach(writer).map(drop)
+    }
+}
+
+/// Exec and job hold no asset grant, so a buffered sender never reaches the attach path.
+impl<F: FnMut(Request) -> Result<Response, HttpError>> Transport for F {
+    type Handle = Infallible;
+    type Writer = Infallible;
+    fn send(&mut self, request: Request) -> Result<Response, HttpError> {
+        self(request)
+    }
+    fn stream(&mut self, _: Request) -> Result<(u16, Vec<Header>, Infallible), HttpError> {
+        Err(HttpError {
+            code: HttpErrorCode::Denied,
+            message: "no asset grant".into(),
+        })
+    }
+    fn read(&mut self, handle: &Infallible, _: &mut [u8]) -> Result<usize, AssetError> {
+        match *handle {}
+    }
+    fn allocate(&mut self, _: &str) -> Result<Infallible, AssetError> {
+        Err(AssetError {
+            code: AssetErrorCode::Denied,
+            message: "no asset grant".into(),
+        })
+    }
+    fn write_all(&mut self, writer: &Infallible, _: &[u8]) -> Result<(), AssetError> {
+        match *writer {}
+    }
+    fn attach(&mut self, writer: Infallible) -> Result<(), AssetError> {
+        match writer {}
+    }
+}
 
 /// Required owner-authored VM runner configuration.
 #[derive(Deserialize)]
@@ -288,11 +386,11 @@ fn input(op: Operation, value: Value) -> Result<Input, VmError> {
     }
 }
 
-fn invoke_with(
+fn invoke_with<T: Transport>(
     capability: &str,
     value: Value,
     base: &str,
-    mut send: impl FnMut(Request) -> Result<Response, HttpError>,
+    mut transport: T,
 ) -> Result<Value, VmError> {
     let input = input(Operation::parse(capability)?, value)?;
     // Settings are owner-authored, but only the broker's allowedHosts grants a destination.
@@ -323,7 +421,7 @@ fn invoke_with(
     } else {
         None
     };
-    let mut call = |verb, path: &str, body: Option<Value>, range: Option<&str>| {
+    let request = |verb, path: &str, body: Option<Value>, range: Option<&str>| {
         let mut request =
             Request::new(verb, format!("{base}{path}")).map_err(|_| error("invalid-settings"))?;
         if let Some(body) = body {
@@ -338,7 +436,12 @@ fn invoke_with(
                 .headers
                 .push(Header::text("range", range).map_err(|_| error("invalid-header"))?);
         }
-        send(request).map_err(map_http_error)
+        Ok::<_, VmError>(request)
+    };
+    let mut call = |verb, path: &str, body: Option<Value>, range: Option<&str>| {
+        transport
+            .send(request(verb, path, body, range)?)
+            .map_err(map_http_error)
     };
     let (profile, name) = match &input {
         Input::Job(job) => {
@@ -386,12 +489,12 @@ fn invoke_with(
                 &[200, 502],
             ),
             Some(path) => {
-                let response = call(
-                    method::GET,
-                    &format!("{prefix}/artifacts/{path}"),
-                    None,
-                    Some("bytes=0-65536"),
-                )?;
+                let artifact_path = format!("{prefix}/artifacts/{path}");
+                if let Some(content_type) = attach_type(&path) {
+                    let get = request(method::GET, &artifact_path, None, None)?;
+                    return attach(&mut transport, get, &path, content_type);
+                }
+                let response = call(method::GET, &artifact_path, None, Some("bytes=0-65536"))?;
                 artifact(response, &path)
             }
         },
@@ -416,11 +519,15 @@ fn json_response(response: Response, allowed: &[u16]) -> Result<Value, VmError> 
 }
 
 fn status_error(response: &Response) -> VmError {
-    error(match response.status {
+    status_code(response.status, &response.body)
+}
+
+fn status_code(status: u16, body: &[u8]) -> VmError {
+    error(match status {
         401 | 403 => "vm-unauthorized",
         409 => "vm-conflict",
         429 => "vm-quota",
-        400 if serde_json::from_slice::<Value>(&response.body)
+        400 if serde_json::from_slice::<Value>(body)
             .ok()
             .is_some_and(|v| v["reason"] == "quota") =>
         {
@@ -472,6 +579,75 @@ fn artifact(response: Response, path: &str) -> Result<Value, VmError> {
     Ok(json!({"path": path, "bytes": bytes, "sha256": sha256, "binary": true}))
 }
 
+fn attach_type(path: &str) -> Option<&'static str> {
+    let lower = path.to_ascii_lowercase();
+    ATTACH_TYPES
+        .iter()
+        .find(|(extension, _)| lower.ends_with(extension))
+        .map(|(_, content_type)| *content_type)
+}
+
+fn attach<T: Transport>(
+    transport: &mut T,
+    request: Request,
+    path: &str,
+    content_type: &str,
+) -> Result<Value, VmError> {
+    let (status, headers, body) = transport.stream(request).map_err(map_http_error)?;
+    if status != 200 {
+        return Err(status_code(status, &[]));
+    }
+    let header = |name: &str| {
+        headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case(name))
+            .and_then(|h| std::str::from_utf8(&h.value).ok())
+    };
+    let bytes: u64 = header("content-length")
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| error("invalid-response"))?;
+    let sha256 = header("sha256")
+        .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(|| error("invalid-response"))?;
+    if bytes > ASSET_LIMIT {
+        return Err(error("asset-too-large"));
+    }
+    let writer = transport.allocate(content_type).map_err(map_asset_error)?;
+    let mut buffer = vec![0; CHUNK];
+    let mut copied = 0u64;
+    loop {
+        let read = transport
+            .read(&body, &mut buffer)
+            .map_err(map_asset_error)?;
+        if read == 0 {
+            break;
+        }
+        copied += read as u64;
+        if copied > bytes {
+            return Err(error("artifact-length-mismatch"));
+        }
+        transport
+            .write_all(&writer, &buffer[..read])
+            .map_err(map_asset_error)?;
+    }
+    if copied != bytes {
+        return Err(error("artifact-length-mismatch"));
+    }
+    drop(body);
+    transport.attach(writer).map_err(map_asset_error)?;
+    Ok(json!({"path": path, "bytes": bytes, "sha256": sha256, "binary": true, "attached": true}))
+}
+
+fn map_asset_error(failure: AssetError) -> VmError {
+    error(match failure.code {
+        AssetErrorCode::TooLarge => "asset-too-large",
+        AssetErrorCode::Denied => "asset-denied",
+        AssetErrorCode::TooManyAssets => "asset-too-many",
+        AssetErrorCode::OverBudget => "asset-over-budget",
+        _ => "asset-failed",
+    })
+}
+
 fn map_http_error(failure: HttpError) -> VmError {
     error(match failure.code {
         HttpErrorCode::Denied | HttpErrorCode::HostCallLimit => "http-denied",
@@ -493,10 +669,10 @@ fn run_with(
     op: Operation,
     input: Value,
     base: &str,
-    send: impl FnMut(Request) -> Result<Response, HttpError>,
+    transport: impl Transport,
     out: &mut Stdout,
 ) -> Result<(), VmError> {
-    let result = invoke_with(op.id(), input, base, send)?;
+    let result = invoke_with(op.id(), input, base, transport)?;
     // One bounded vm-runner response; no returned value side channel.
     serde_json::to_writer(out, &result).map_err(|_| error("output-closed"))
 }
