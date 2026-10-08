@@ -30,8 +30,14 @@ provider. The broker requires both a Cedar `secret.use` grant and a private-map 
 
 Owner `providerSettings.vm.baseUrl` is required (the Pi config sets it to
 `https://vm-runner.vm-runner.svc.cluster.local:8443`). Missing or malformed settings
-fail before any VM effect. No argv or invocation field selects a URL. Only broker
-`allowedHosts` grants destinations. The component imports SDK-owned HTTP, settings
+fail SDK validation before any VM effect. The required key remains `baseUrl`;
+there is no runtime default. It accepts HTTP(S), an optional path prefix, and one
+trailing slash, but no userinfo, query, fragment, whitespace, or empty host.
+Requests append their paths to the configured prefix. No argv or invocation field
+selects a URL. Only broker
+`allowedHosts` grants destinations; plaintext loopback still needs its explicit
+grant, and secret bindings must authorize the configured host and path prefix.
+The component imports SDK-owned HTTP, settings
 and stdio interfaces; settings are available only during invoke. Asset WIT is a type
 dependency, not ambient authority.
 
@@ -73,10 +79,17 @@ Build only `wasm32-unknown-unknown`, never WASI; normal dependencies are exact p
 ```sh
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo clippy --locked --package dekopon-vm-provider --target wasm32-unknown-unknown --lib -- -D warnings
 cargo deny --all-features check bans licenses sources advisories
 ../provider-workflows/build.sh
 DEKOPON_PROVIDER_COMPONENT=$PWD/vm-provider.wasm cargo test --locked --workspace
 ```
+
+The synthetic cassette `tests/cassettes/vm/0001-GET-v1-jobs-job-1.json` is authored
+from the scripted `state: running` job response in `tests/secret_authority.rs`,
+not recorded from a live service. Replay checks exact prefixed and configured cluster
+URIs, no query, the unchanged absence of Accept, no guest Authorization, and output.
+VM has no content URL inputs or model-facing API-origin controls.
 
 Tests use native mocks and loopback broker HTTP only. The component test requires
 `DEKOPON_PROVIDER_COMPONENT` and never silently skips. Release artifacts are
