@@ -1,40 +1,28 @@
 # Release runbook
 
-The tag workflow is intentionally the only publisher. Do not commit generated Wasm, use `cargo
-publish`, push an OCI artifact by hand, or create a release manually.
+The tag workflow is the only publisher. Do not commit generated Wasm, use `cargo publish`,
+push an OCI artifact by hand, or create a release manually. The current
+[shared release workflow](https://github.com/dekopon-agents/provider-workflows/blob/main/.github/workflows/release.yml)
+is authoritative; check it before each release.
 
-1. On clean `main`, run all commands in the README's acceptance section and confirm `ci / validate`
-   is green; it performs the two-archive reproducibility gate that used to run locally.
-2. Confirm `git status --short` is empty, the package version in `Cargo.toml` is exactly the version
-   you are about to tag, no release exists for that tag, and `ghcr.io/dekopon-agents/provider-vm`
-   carries no version with that tag. Published versions are immutable; a reused tag is refused.
-3. The owner commits the version bump to `main`, then pushes an annotated `vX.Y.Z` tag on that
-   commit; the tag starts the shared release workflow. Implementation agents do not tag or release.
-4. The workflow performs: MSRV/source/build gates -> provenance/SBOM attestations -> one newly owned
-   draft with exact assets -> a verified GHCR `<version>` manifest -> prepublication
-   re-verification -> explicit finalization -> anonymous verification. It never creates a `latest` or
-   `staging` OCI tag.
-5. Confirm release assets are exactly `vm-provider.wasm`, `vm-provider.wasm.sha256` and the
-   CycloneDX SBOM `vm-provider.cdx.json`. Confirm
-   the public OCI manifest has one `application/wasm` layer, title `vm-provider.wasm`, and that
-   the repository's tag list gained exactly the new version.
+1. Prepare the package version and its lockfile entry in a reviewed PR. Run the README's
+   acceptance commands and confirm `ci / validate` is green on the final head.
+   The independent two-copy reproducibility comparison is currently disabled in CI and release.
+2. Before tagging, verify the version is unused as a Git tag, a draft or published GitHub
+   release, and `ghcr.io/dekopon-agents/provider-vm:<version>`. The OCI tag omits the `v` prefix.
+   The workflow does not check for an existing OCI tag before pushing it.
+3. After merge and explicit release authorization, push an annotated `vX.Y.Z` tag on the
+   approved `main` commit. The workflow checks annotation, event SHA, package version, and
+   main ancestry. Release preparation alone does not authorize merging or tagging.
+4. The workflow runs formatting, dependency policy, host/wasm clippy, component build/checksum,
+   real-component tests, and SBOM generation, then attests the component and SBOM. It creates
+   or reuses a draft, verifies its exact assets and bytes, publishes and verifies one OCI
+   `application/wasm` layer, and finalizes the GitHub release. Stable releases become latest.
+5. Confirm all release jobs succeed, including anonymous download/checksum and commit-bound
+   provenance verification. GitHub assets must be exactly `vm-provider.wasm`,
+   `vm-provider.wasm.sha256`, and `vm-provider.cdx.json`; the OCI layer digest must match
+   the component checksum. No `latest` or `staging` OCI tag is created.
 
-The workflow refuses lightweight/non-SemVer tags, a tag not resolving to the event SHA, a tag not on
-`main`, a package-version mismatch, **any** existing draft/published release for the tag, an OCI tag
-that already exists, wrong bytes, wrong WIT, missing commit-bound attestations, and extra
-assets/layers. It captures release, asset, package, package-version, and OCI manifest IDs or digests
-only after creation. Immediately before publication it re-peels the tag, downloads the draft assets
-by captured immutable IDs, checks their bytes and checksum against the Actions artifact, checks WIT,
-anonymously verifies attestations and digest-pinned OCI bytes, and then changes only the captured
-release.
-
-A failed or cancelled downstream job invokes rollback. Rollback deletes the exact captured release
-ID even if this run already finalized it, deletes only the captured package version ID/manifest
-digest, and verifies that version is gone. The package itself is only made private and deleted when
-this run created it — the release that first publishes the package owns it, and a later release
-rolling itself back must not take its predecessors offline. Rollback never discovers ownership
-through a mutable tag, and cleanup errors fail loudly. Attestations are immutable and may remain as
-non-release evidence for a failed digest.
-
-GitHub release finalization explicitly sets `draft: false`, sets `prerelease` from the version, and
-marks a stable release `make_latest: "true"` (a prerelease is never latest).
+A published release is refused. An existing draft may be reused only when its checked assets
+match. Draft-job failure attempts to remove only a draft created by that job; the current
+workflow has no general rollback for later OCI publication or finalization failures.
