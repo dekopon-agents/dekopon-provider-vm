@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "request": {
+    "method": "GET",
+    "path": "/v1/jobs/job-1",
+    "query": null,
+    "headers": {},
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "json": {
+        "state": "running"
+      }
+    }
+  }
+}

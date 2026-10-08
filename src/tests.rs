@@ -118,7 +118,7 @@ fn exec_keeps_job_status_and_never_sets_authorization() {
         let result = invoke_with(
             "vm.exec",
             json!({"profile":"travel","name":"default","argv":["pwd"],"deadlineMs":25000}),
-            DEFAULT_BASE,
+            &Base::from_static(DEFAULT_BASE),
             |r| {
                 calls.push(r);
                 Ok(if calls.len() == 1 {
@@ -145,36 +145,30 @@ fn validation_and_settings_reject_before_effect() {
         json!({"jobId":"x","secret":SECRET}),
     ] {
         assert_eq!(
-            invoke_with("vm.job.get", value, DEFAULT_BASE, |_| panic!(
-                "HTTP before validation"
-            ))
+            invoke_with(
+                "vm.job.get",
+                value,
+                &Base::from_static(DEFAULT_BASE),
+                |_| panic!("HTTP before validation")
+            )
             .unwrap_err()
             .code()
             .as_str(),
             "invalid-input"
         );
     }
-    assert_eq!(
-        invoke_with(
-            "vm.job.get",
-            json!({"jobId":"x"}),
-            "http://user@invalid",
-            |_| panic!("HTTP before settings")
-        )
-        .unwrap_err()
-        .code()
-        .as_str(),
-        "invalid-settings"
-    );
     for value in [
         json!({"profile":"travel","name":"default","argv":["cat"],"deadlineMs":25000,"stdinPiped":true}),
         json!({"profile":"travel","name":"default","argv":["cat"],"deadlineMs":25000,"stdinPiped":true,"stdinBudget":command::MAX_BYTES}),
         json!({"profile":"travel","name":"default","argv":["cat"],"deadlineMs":25000,"stdinBudget":1}),
     ] {
         assert_eq!(
-            invoke_with("vm.exec", value, DEFAULT_BASE, |_| panic!(
-                "HTTP before budget validation"
-            ))
+            invoke_with(
+                "vm.exec",
+                value,
+                &Base::from_static(DEFAULT_BASE),
+                |_| panic!("HTTP before budget validation")
+            )
             .unwrap_err()
             .code()
             .as_str(),
@@ -186,7 +180,8 @@ fn validation_and_settings_reject_before_effect() {
     assert_eq!(
         serde_json::from_str::<Settings>(r#"{"baseUrl":"https://vm.example"}"#)
             .unwrap()
-            .base_url,
+            .base_url
+            .as_str(),
         "https://vm.example"
     );
 }
@@ -505,7 +500,7 @@ fn read_artifact(
     let result = invoke_with(
         "vm.artifact.read",
         json!({"profile":"travel","name":"default","path":path}),
-        DEFAULT_BASE,
+        &Base::from_static(DEFAULT_BASE),
         Fake {
             log: log.clone(),
             artifact,
@@ -633,4 +628,51 @@ fn other_artifact_paths_keep_the_ranged_text_or_metadata_read() {
     }
     let log = log.borrow();
     assert!(log.streamed.is_empty() && log.allocated.is_empty());
+}
+
+#[test]
+fn model_origin_controls_are_absent_and_rejected() {
+    for capability in provider::manifest::<Vm>().unwrap().capabilities {
+        let properties = capability.input_schema["properties"].as_object().unwrap();
+        for key in ["baseUrl", "base_url", "endpoint", "url", "apiUrl"] {
+            assert!(!properties.contains_key(key));
+            let mut value = match capability.id.as_str() {
+                "vm.exec" => {
+                    json!({"profile":"test","name":"default","argv":["pwd"],"deadlineMs":25000})
+                }
+                "vm.job.get" => json!({"jobId":"job-1"}),
+                "vm.artifact.read" => json!({"profile":"test","name":"default","path":"shot.png"}),
+                _ => unreachable!(),
+            };
+            value[key] = json!("https://other.example.test");
+            let native = dekopon_provider_sdk_testkit::Native::<Vm>::new()
+                .settings(json!({"baseUrl": DEFAULT_BASE}));
+            let output = native.call(capability.id.as_str(), &value.to_string());
+            assert_ne!(output.status, 0);
+            assert!(native.requests().is_empty());
+        }
+    }
+    assert!(
+        serde_json::from_value::<ArtifactInput>(
+            json!({"profile":"test","name":"default","path":"shot.png"})
+        )
+        .is_ok()
+    );
+    for flag in ["--base-url", "--baseUrl", "--endpoint", "--url"] {
+        assert!(!matches!(
+            command(
+                &[
+                    flag,
+                    "https://other.example.test",
+                    "--secret",
+                    SECRET,
+                    "test",
+                    "--",
+                    "pwd"
+                ],
+                false
+            ),
+            CommandRunOutcome::Proposed { .. }
+        ));
+    }
 }

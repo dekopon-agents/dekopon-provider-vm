@@ -1,6 +1,7 @@
 //! Broker-only imports deliberately prevent execution under a direct, non-broker host.
 
 use dekopon_provider_sdk::asset::{self, AssetError, AssetErrorCode, Encoding};
+use dekopon_provider_sdk::provider::endpoint::Base;
 use dekopon_provider_sdk::provider::{
     self, Assets, Capability, Code, Failure, Header, Http, HttpError, HttpErrorCode, Proposal,
     Provider, Request, Response, Settings as ProviderSettings, Stdout, StreamedRequest, Usage,
@@ -296,7 +297,7 @@ impl<F: FnMut(Request) -> Result<Response, HttpError>> Transport for F {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Settings {
-    base_url: String,
+    base_url: Base,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -389,18 +390,10 @@ fn input(op: Operation, value: Value) -> Result<Input, VmError> {
 fn invoke_with<T: Transport>(
     capability: &str,
     value: Value,
-    base: &str,
+    base: &Base,
     mut transport: T,
 ) -> Result<Value, VmError> {
     let input = input(Operation::parse(capability)?, value)?;
-    // Settings are owner-authored, but only the broker's allowedHosts grants a destination.
-    if !(base.starts_with("https://") || base.starts_with("http://"))
-        || base.contains(['?', '#', '@'])
-        || base.bytes().any(|b| b.is_ascii_whitespace())
-    {
-        return Err(error("invalid-settings"));
-    }
-    let base = base.trim_end_matches('/');
     // Read and validate bounded piped data before the first VM effect (session creation).
     let stdin_text = if let Input::Exec(v) = &input {
         if v.stdin_piped {
@@ -422,8 +415,11 @@ fn invoke_with<T: Transport>(
         None
     };
     let request = |verb, path: &str, body: Option<Value>, range: Option<&str>| {
-        let mut request =
-            Request::new(verb, format!("{base}{path}")).map_err(|_| error("invalid-settings"))?;
+        let mut request = Request::new(
+            verb,
+            base.join(path).map_err(|_| error("invalid-settings"))?,
+        )
+        .map_err(|_| error("invalid-settings"))?;
         if let Some(body) = body {
             request.body = serde_json::to_vec(&body).map_err(|_| error("invalid-input"))?;
             request.headers.push(
@@ -668,7 +664,7 @@ fn map_http_error(failure: HttpError) -> VmError {
 fn run_with(
     op: Operation,
     input: Value,
-    base: &str,
+    base: &Base,
     transport: impl Transport,
     out: &mut Stdout,
 ) -> Result<(), VmError> {
