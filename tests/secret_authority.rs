@@ -247,6 +247,7 @@ async fn cedar_denies_before_http_and_permitted_job_get_injects_exactly_one_bear
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
+        stream.set_nonblocking(false).unwrap();
         let mut request = Vec::new();
         while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
             let mut buf = [0; 4096];
