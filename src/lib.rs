@@ -13,6 +13,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{convert::Infallible, fmt, io::Read};
 
 mod command;
@@ -22,7 +23,8 @@ const DEFAULT_BASE: &str = "https://vm-runner.vm-runner.svc.cluster.local:8443";
 const TEXT_LIMIT: usize = 65_536;
 const CHUNK: usize = 65_536;
 const ASSET_LIMIT: u64 = 8 * 1024 * 1024;
-const ATTACH_TYPES: [(&str, &str); 3] = [
+const ATTACH_TYPES: [(&str, &str); 4] = [
+    (".mp4", "video/mp4"),
     (".png", "image/png"),
     (".jpg", "image/jpeg"),
     (".jpeg", "image/jpeg"),
@@ -611,6 +613,7 @@ fn attach<T: Transport>(
     let writer = transport.allocate(content_type).map_err(map_asset_error)?;
     let mut buffer = vec![0; CHUNK];
     let mut copied = 0u64;
+    let mut digest = Sha256::new();
     loop {
         let read = transport
             .read(&body, &mut buffer)
@@ -619,15 +622,19 @@ fn attach<T: Transport>(
             break;
         }
         copied += read as u64;
-        if copied > bytes {
+        if copied > bytes || copied > ASSET_LIMIT {
             return Err(error("artifact-length-mismatch"));
         }
+        digest.update(&buffer[..read]);
         transport
             .write_all(&writer, &buffer[..read])
             .map_err(map_asset_error)?;
     }
     if copied != bytes {
         return Err(error("artifact-length-mismatch"));
+    }
+    if hex::decode(sha256).ok().as_deref() != Some(digest.finalize().as_slice()) {
+        return Err(error("artifact-hash-mismatch"));
     }
     drop(body);
     transport.attach(writer).map_err(map_asset_error)?;

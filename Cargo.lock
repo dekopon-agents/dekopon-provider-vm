@@ -964,12 +964,16 @@ dependencies = [
  "dekopon-broker-protocol",
  "dekopon-capability",
  "dekopon-core",
+ "dekopon-http-host",
  "dekopon-provider-sdk",
  "dekopon-provider-sdk-testkit",
+ "hex",
  "percent-encoding",
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
  "tokio",
 ]
 

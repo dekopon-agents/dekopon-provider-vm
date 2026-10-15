@@ -485,7 +485,8 @@ impl Transport for Fake {
 }
 const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 fn image(status: u16, length: Option<u64>, bytes: Vec<u8>) -> Option<(u16, Vec<Header>, Vec<u8>)> {
-    let mut headers = vec![Header::text("sha256", DIGEST).unwrap()];
+    let digest = hex::encode(Sha256::digest(&bytes));
+    let mut headers = vec![Header::text("sha256", digest).unwrap()];
     if let Some(length) = length {
         headers.push(Header::text("Content-Length", length.to_string()).unwrap());
     }
@@ -511,11 +512,12 @@ fn read_artifact(
 }
 
 #[test]
-fn png_and_jpeg_artifacts_attach_their_full_bytes_in_64k_reads() {
+fn image_and_mp4_artifacts_attach_full_bytes_in_64k_reads() {
     for (path, content_type, size) in [
         ("shot.png", "image/png", 150_000_usize),
         ("Photo.JPG", "image/jpeg", 65_536),
         ("page.jpeg", "image/jpeg", 7),
+        ("clip.MP4", "video/mp4", 150_000),
     ] {
         let bytes: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
         let (result, log) = read_artifact(
@@ -525,31 +527,49 @@ fn png_and_jpeg_artifacts_attach_their_full_bytes_in_64k_reads() {
         );
         assert_eq!(
             result.unwrap(),
-            json!({"path":path,"bytes":size,"sha256":DIGEST,"binary":true,"attached":true})
+            json!({"path":path,"bytes":size,"sha256":hex::encode(Sha256::digest(&bytes)),"binary":true,"attached":true})
         );
         let log = log.borrow();
         assert_eq!(log.requests.len(), 1, "only session creation is buffered");
         assert_eq!(log.streamed.len(), 1);
         let get = &log.streamed[0];
         assert_eq!(get.method, "GET");
-        assert!(
-            get.uri
-                .ends_with(&format!("/v1/sessions/session-1/artifacts/{path}"))
+        assert_eq!(
+            get.uri,
+            format!("{DEFAULT_BASE}/v1/sessions/session-1/artifacts/{path}")
         );
         assert!(get.headers.iter().all(|h| h.name != "range"));
         assert_eq!(log.allocated, [content_type]);
         assert_eq!(log.attached, [(content_type.to_owned(), bytes)]);
-        assert!(log.reads.iter().all(|&n| n <= 65_536));
-        assert_eq!(log.reads.len(), size.div_ceil(65_536) + 1);
-        assert_eq!(log.writes.iter().sum::<usize>(), size);
+        assert_eq!(
+            log.reads,
+            (0..size)
+                .step_by(65_536)
+                .map(|i| (size - i).min(65_536))
+                .chain([0])
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(log.writes, log.reads[..log.reads.len() - 1]);
         assert_eq!((log.released_writers, log.released_bodies), (0, 1));
     }
 }
 
 #[test]
-fn failed_image_reads_attach_nothing_and_release_the_writer_and_body() {
+fn failed_mp4_reads_attach_nothing_and_release_the_writer_and_body() {
     let limit = 8 * 1024 * 1024;
     for (artifact, code, allocated) in [
+        (
+            Some((
+                200,
+                vec![
+                    Header::text("sha256", DIGEST).unwrap(),
+                    Header::text("content-length", "4").unwrap(),
+                ],
+                vec![1; 4],
+            )),
+            "artifact-hash-mismatch",
+            1,
+        ),
         (
             image(200, Some(100), vec![1; 50]),
             "artifact-length-mismatch",
@@ -573,7 +593,7 @@ fn failed_image_reads_attach_nothing_and_release_the_writer_and_body() {
             0,
         ),
     ] {
-        let (result, log) = read_artifact("shot.png", artifact, response(500, json!(null)));
+        let (result, log) = read_artifact("clip.mp4", artifact, response(500, json!(null)));
         assert_eq!(result.unwrap_err().code().as_str(), code);
         let log = log.borrow();
         assert!(log.attached.is_empty(), "{code}");
@@ -582,6 +602,28 @@ fn failed_image_reads_attach_nothing_and_release_the_writer_and_body() {
             (log.released_writers, log.released_bodies),
             (allocated, 1),
             "{code}"
+        );
+    }
+}
+
+#[test]
+fn invalid_mp4_inputs_refuse_before_session_creation() {
+    for value in [
+        json!({"profile":null,"name":"default","path":"clip.mp4"}),
+        json!({"profile":"travel","name":null,"path":"clip.mp4"}),
+        json!({"profile":"travel","name":"default","path":"dir/clip.mp4"}),
+    ] {
+        assert_eq!(
+            invoke_with(
+                "vm.artifact.read",
+                value,
+                &Base::from_static(DEFAULT_BASE),
+                |_| panic!("HTTP before validation")
+            )
+            .unwrap_err()
+            .code()
+            .as_str(),
+            "invalid-input"
         );
     }
 }
@@ -603,7 +645,7 @@ fn other_artifact_paths_keep_the_ranged_text_or_metadata_read() {
         ],
         body: vec![0xff; 65_537],
     };
-    for path in ["shot.webp", "shot.png.txt", "png", "blob"] {
+    for path in ["shot.webp", "shot.png.txt", "clip.mp4.txt", "png", "blob"] {
         let (result, log) = read_artifact(
             path,
             None,

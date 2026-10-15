@@ -11,14 +11,20 @@ use dekopon_broker_host::{
     asset::AssetInputs,
 };
 use dekopon_broker_protocol::{Streams, TraceParent};
-use dekopon_capability::{ExecutionConstraints, HttpConstraints, HttpPathRule, InvocationOutcome};
+use dekopon_capability::{
+    AssetConstraints, ExecutionConstraints, HttpConstraints, HttpPathRule, InvocationOutcome,
+};
 use dekopon_core::{Actor, SecretDrn, SecretSinkKind};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     io::{Read, Write},
     net::TcpListener,
-    os::{fd::OwnedFd, unix::net::UnixStream},
+    os::{
+        fd::OwnedFd,
+        unix::{fs::FileExt, net::UnixStream},
+    },
     path::PathBuf,
     sync::Arc,
     thread,
@@ -64,10 +70,17 @@ fn streams() -> (AssetInputs, UnixStream) {
         peer,
     )
 }
-async fn broker(authority: &str, deny: bool) -> Broker<InMemoryAuditLog> {
-    let registry = BrokerProviderRegistry::load_with_options(
+async fn broker(
+    authority: &str,
+    deny: bool,
+    asset_root: Option<&std::path::Path>,
+) -> Broker<InMemoryAuditLog> {
+    let mut registry = BrokerProviderRegistry::load_with_options(
         [component()],
-        BrokerHostLimits::default(),
+        BrokerHostLimits {
+            max_http_response_bytes: 9 * 1024 * 1024,
+            ..BrokerHostLimits::default()
+        },
         None,
         &BrokerHostOptions {
             provider_settings: Arc::new(BTreeMap::from([(
@@ -79,6 +92,12 @@ async fn broker(authority: &str, deny: bool) -> Broker<InMemoryAuditLog> {
     )
     .await
     .unwrap();
+    if let Some(root) = asset_root {
+        registry.set_assets(dekopon_http_host::asset::AssetDirectory::new(
+            root.to_owned(),
+            20 * 1024 * 1024,
+        ));
+    }
     let capabilities = registry.manifests().next().unwrap().capabilities.clone();
     let world = PolicyWorld::new(
         ["caller".parse().unwrap()],
@@ -119,6 +138,7 @@ async fn broker(authority: &str, deny: bool) -> Broker<InMemoryAuditLog> {
         })
         .collect();
     let catalog = ConstraintCatalog::new(capabilities.into_iter().map(|c| {
+        let artifact = c.id.as_str() == "vm.artifact.read";
         (
             c.id,
             ConstraintSet {
@@ -134,9 +154,14 @@ async fn broker(authority: &str, deny: bool) -> Broker<InMemoryAuditLog> {
                         allowed_methods: vec!["GET".into(), "POST".into()],
                         max_requests: 2,
                         max_request_bytes: 200000,
-                        max_response_bytes: 1048576,
+                        max_response_bytes: if artifact { 9 * 1024 * 1024 } else { 1048576 },
                         allow_plaintext_loopback: true,
                         propagate_trace: false,
+                    }),
+                    asset: artifact.then_some(AssetConstraints {
+                        attach: true,
+                        remove: false,
+                        send: false,
                     }),
                     ..ExecutionConstraints::default()
                 },
@@ -177,7 +202,7 @@ async fn cedar_denies_before_http_and_permitted_job_get_injects_exactly_one_bear
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let authority = listener.local_addr().unwrap().to_string();
-    let denied = broker(&authority, true).await;
+    let denied = broker(&authority, true, None).await;
     let words = ["--job", "job-1", "--secret", SECRET].map(str::to_owned);
     let CommandRunOutcome::Proposed {
         capability,
@@ -220,7 +245,7 @@ async fn cedar_denies_before_http_and_permitted_job_get_injects_exactly_one_bear
             }
         };
         stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         let mut request = Vec::new();
         while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
@@ -240,7 +265,7 @@ async fn cedar_denies_before_http_and_permitted_job_get_injects_exactly_one_bear
         stream.write_all(body).unwrap();
         String::from_utf8(request).unwrap()
     });
-    let permitted = broker(&authority, false).await;
+    let permitted = broker(&authority, false, None).await;
     let (assets, mut stdout) = streams();
     let result = permitted
         .invoke(
@@ -277,4 +302,115 @@ async fn cedar_denies_before_http_and_permitted_job_get_injects_exactly_one_bear
         1
     );
     assert!(!wire.contains(SECRET));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn component_attaches_complete_mp4_without_a_send_grant() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let authority = listener.local_addr().unwrap().to_string();
+    let bytes: Vec<u8> = (0..150_000).map(|i| (i % 251) as u8).collect();
+    let digest = hex::encode(Sha256::digest(&bytes));
+    let expected = bytes.clone();
+    let header_digest = digest.clone();
+    let server = thread::spawn(move || {
+        let mut paths = Vec::new();
+        for index in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                let mut buf = [0; 4096];
+                let n = stream.read(&mut buf).unwrap();
+                assert_ne!(n, 0);
+                request.extend_from_slice(&buf[..n]);
+                assert!(request.len() < 32768);
+            }
+            let header_end = request
+                .windows(4)
+                .position(|part| part == b"\r\n\r\n")
+                .unwrap()
+                + 4;
+            let headers = String::from_utf8(request[..header_end].to_vec()).unwrap();
+            let length = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length: ")
+                        .and_then(|n| n.parse::<usize>().ok())
+                })
+                .unwrap_or(0);
+            while request.len() - header_end < length {
+                let mut buf = [0; 4096];
+                let n = stream.read(&mut buf).unwrap();
+                assert_ne!(n, 0);
+                request.extend_from_slice(&buf[..n]);
+            }
+            paths.push(headers);
+            if index == 0 {
+                let body = br#"{"sessionId":"session-1"}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 201 Created\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(body).unwrap();
+            } else {
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nsha256: {header_digest}\r\nConnection: close\r\n\r\n", bytes.len()).unwrap();
+                for chunk in bytes.chunks(65_536) {
+                    stream.write_all(chunk).unwrap();
+                }
+            }
+        }
+        paths
+    });
+    let root = tempfile::tempdir().unwrap();
+    let broker = broker(&authority, false, Some(root.path())).await;
+    let (assets, mut stdout) = streams();
+    let mut call = request(
+        "mp4",
+        json!({"profile":"travel","name":"default","path":"clip.mp4"}),
+        Some(dekopon_core::SecretUseProposal::HttpBearer {
+            secret: SECRET.parse().unwrap(),
+        }),
+    );
+    call.capability = "vm.artifact.read".parse().unwrap();
+    let result = broker
+        .invoke(&context(), None, None, call, assets)
+        .await
+        .unwrap();
+    assert_eq!(
+        result.result.outcome,
+        InvocationOutcome::Succeeded,
+        "{:?}",
+        result.result.error
+    );
+    let mut output = Vec::new();
+    stdout.read_to_end(&mut output).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output).unwrap(),
+        json!({"path":"clip.mp4","bytes":expected.len(),"sha256":digest,"binary":true,"attached":true})
+    );
+    assert_eq!(result.assets.attached.len(), 1);
+    assert!(result.assets.sent.is_empty());
+    let attached = &result.assets.attached[0];
+    assert_eq!(attached.content_type, "video/mp4");
+    assert_eq!(attached.bytes, expected.len() as u64);
+    assert_eq!(attached.sha256, digest);
+    let mut actual = vec![0; expected.len()];
+    assert_eq!(
+        result.assets.files[0]
+            .file()
+            .read_at(&mut actual, 0)
+            .unwrap(),
+        expected.len()
+    );
+    assert_eq!(actual, expected);
+    let paths = server.join().unwrap();
+    assert_eq!(paths.len(), 2);
+    assert!(paths[0].starts_with("POST /v1/sessions HTTP/1.1\r\n"));
+    assert!(paths[1].starts_with("GET /v1/sessions/session-1/artifacts/clip.mp4 HTTP/1.1\r\n"));
+    assert!(!paths[1].to_ascii_lowercase().contains("range:"));
 }

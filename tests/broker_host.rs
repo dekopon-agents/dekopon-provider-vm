@@ -61,4 +61,16 @@ fn component_conforms_and_requires_settings_before_vm_effect() {
         json!({"state":"running"})
     );
     assert_eq!(Harness::<Vm>::compiled_identities(), 1);
+    for input in [
+        json!({"profile":null,"name":"default","path":"clip.mp4"}),
+        json!({"profile":"travel","name":null,"path":"clip.mp4"}),
+        json!({"profile":"travel","name":"default","path":"dir/clip.mp4"}),
+    ] {
+        let output = Harness::<Vm>::get(component())
+            .settings(json!({"baseUrl":"https://fixture.example.test"}))
+            .call("vm.artifact.read", input)
+            .unwrap();
+        assert_ne!(output.status, 0);
+        assert!(output.http_calls.is_empty());
+    }
 }
