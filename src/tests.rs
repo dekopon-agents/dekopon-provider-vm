@@ -607,11 +607,30 @@ fn failed_mp4_reads_attach_nothing_and_release_the_writer_and_body() {
 }
 
 #[test]
+fn absent_path_still_lists_artifacts() {
+    let log = Shared::default();
+    let result = invoke_with(
+        "vm.artifact.read",
+        json!({"profile":"travel","name":"default"}),
+        &Base::from_static(DEFAULT_BASE),
+        Fake {
+            log: log.clone(),
+            artifact: None,
+            text: response(200, json!(["clip.mp4"])),
+        },
+    )
+    .unwrap();
+    assert_eq!(result, json!(["clip.mp4"]));
+    assert_eq!(log.borrow().requests.len(), 2);
+}
+
+#[test]
 fn invalid_mp4_inputs_refuse_before_session_creation() {
     for value in [
         json!({"profile":null,"name":"default","path":"clip.mp4"}),
         json!({"profile":"travel","name":null,"path":"clip.mp4"}),
         json!({"profile":"travel","name":"default","path":"dir/clip.mp4"}),
+        json!({"profile":"travel","name":"default","path":null}),
     ] {
         assert_eq!(
             invoke_with(

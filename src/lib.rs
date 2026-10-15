@@ -330,7 +330,14 @@ pub struct ArtifactInput {
     #[schemars(regex(pattern = "^[a-z0-9][a-z0-9-]{0,62}$"))]
     pub(crate) name: String,
     #[schemars(regex(pattern = "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"))]
+    #[serde(default, deserialize_with = "present_path")]
     pub(crate) path: Option<String>,
+}
+
+fn present_path<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]

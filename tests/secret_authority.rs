@@ -75,6 +75,11 @@ async fn broker(
     deny: bool,
     asset_root: Option<&std::path::Path>,
 ) -> Broker<InMemoryAuditLog> {
+    let prefix = if asset_root.is_some() {
+        "/runner/api"
+    } else {
+        ""
+    };
     let mut registry = BrokerProviderRegistry::load_with_options(
         [component()],
         BrokerHostLimits {
@@ -85,7 +90,7 @@ async fn broker(
         &BrokerHostOptions {
             provider_settings: Arc::new(BTreeMap::from([(
                 "vm".parse().unwrap(),
-                json!({"baseUrl":format!("http://{authority}")}).to_string(),
+                json!({"baseUrl":format!("http://{authority}{prefix}/")}).to_string(),
             )])),
             ..BrokerHostOptions::default()
         },
@@ -131,7 +136,9 @@ async fn broker(
             allowed_methods: vec!["GET".into(), "POST".into()],
             allowed_paths: ["/v1/sessions", "/v1/jobs"]
                 .into_iter()
-                .map(|p| HttpPathRule::SegmentPrefix { path: p.into() })
+                .map(|p| HttpPathRule::SegmentPrefix {
+                    path: format!("{prefix}{p}"),
+                })
                 .collect(),
             allow_query: false,
             max_injections: 2,
@@ -411,7 +418,41 @@ async fn component_attaches_complete_mp4_without_a_send_grant() {
     assert_eq!(actual, expected);
     let paths = server.join().unwrap();
     assert_eq!(paths.len(), 2);
-    assert!(paths[0].starts_with("POST /v1/sessions HTTP/1.1\r\n"));
-    assert!(paths[1].starts_with("GET /v1/sessions/session-1/artifacts/clip.mp4 HTTP/1.1\r\n"));
+    for (wire, method, path) in [
+        (&paths[0], "POST", "/runner/api/v1/sessions"),
+        (
+            &paths[1],
+            "GET",
+            "/runner/api/v1/sessions/session-1/artifacts/clip.mp4",
+        ),
+    ] {
+        assert_eq!(
+            wire.lines().next(),
+            Some(format!("{method} {path} HTTP/1.1").as_str())
+        );
+        let lower = wire.to_ascii_lowercase();
+        assert!(
+            lower
+                .lines()
+                .any(|line| line == format!("host: {authority}"))
+        );
+        let request_target = wire
+            .lines()
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap();
+        assert_eq!(
+            format!("http://{authority}{request_target}"),
+            format!("http://{authority}{path}")
+        );
+        assert_eq!(lower.matches("authorization:").count(), 1);
+        assert!(lower.contains(&format!("authorization: bearer {TOKEN}")));
+        assert!(
+            !wire.contains(SECRET),
+            "no guest-supplied DRN may travel to the VM"
+        );
+    }
     assert!(!paths[1].to_ascii_lowercase().contains("range:"));
 }

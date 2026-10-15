@@ -65,6 +65,7 @@ fn component_conforms_and_requires_settings_before_vm_effect() {
         json!({"profile":null,"name":"default","path":"clip.mp4"}),
         json!({"profile":"travel","name":null,"path":"clip.mp4"}),
         json!({"profile":"travel","name":"default","path":"dir/clip.mp4"}),
+        json!({"profile":"travel","name":"default","path":null}),
     ] {
         let output = Harness::<Vm>::get(component())
             .settings(json!({"baseUrl":"https://fixture.example.test"}))
