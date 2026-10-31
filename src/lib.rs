@@ -18,6 +18,9 @@ use std::{convert::Infallible, fmt, io::Read};
 
 mod command;
 
+// The `vm` Agent Skill: untrusted model text that grants nothing.
+dekopon_provider_sdk::skills!("vm/SKILL.md");
+
 #[cfg(test)]
 const DEFAULT_BASE: &str = "https://vm-runner.vm-runner.svc.cluster.local:8443";
 const TEXT_LIMIT: usize = 65_536;
