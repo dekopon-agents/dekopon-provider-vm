@@ -154,6 +154,7 @@ async fn broker(
                 effect: c.effect,
                 risk: c.risk,
                 credential: None,
+                default_secret_use: None,
                 constraints: ExecutionConstraints {
                     timeout_ms: 10000,
                     http: Some(HttpConstraints {
@@ -164,6 +165,8 @@ async fn broker(
                         max_response_bytes: if artifact { 9 * 1024 * 1024 } else { 1048576 },
                         allow_plaintext_loopback: true,
                         propagate_trace: false,
+                        request_templates: Vec::new(),
+                        signed_download: None,
                     }),
                     asset: artifact.then_some(AssetConstraints {
                         attach: true,
@@ -179,7 +182,6 @@ async fn broker(
     Broker::new(
         registry,
         "broker".parse().unwrap(),
-        "test".into(),
         PolicyEngine::new(&policy, &world).unwrap(),
         catalog,
         CredentialStore::empty(),

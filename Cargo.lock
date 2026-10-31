@@ -12,6 +12,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "adler2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -182,6 +188,52 @@ name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
+
+[[package]]
+name = "axum"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
+dependencies = [
+ "axum-core",
+ "bytes",
+ "futures-util",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "itoa",
+ "matchit",
+ "memchr",
+ "mime",
+ "percent-encoding",
+ "pin-project-lite",
+ "serde_core",
+ "sync_wrapper",
+ "tokio",
+ "tower",
+ "tower-layer",
+ "tower-service",
+]
+
+[[package]]
+name = "axum-core"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08c78f31d7b1291f7ee735c1c6780ccde7785daae9a9206026862dab7d8792d1"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "http",
+ "http-body",
+ "http-body-util",
+ "mime",
+ "pin-project-lite",
+ "sync_wrapper",
+ "tower-layer",
+ "tower-service",
+]
 
 [[package]]
 name = "base64"
@@ -764,9 +816,9 @@ dependencies = [
 
 [[package]]
 name = "dekopon-broker"
-version = "0.38.0"
+version = "0.75.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2ef23d3635354bce2012dec86295ccd7cd2a4170403b480b7ac580340a5463b"
+checksum = "9664c7f938165c3d73e45baa24323d26bb28ab248a4133820284080785314d61"
 dependencies = [
  "async-trait",
  "dekopon-broker-host",
@@ -775,11 +827,13 @@ dependencies = [
  "dekopon-core",
  "dekopon-policy",
  "dekopon-storage-host",
+ "dekopon-telemetry",
  "getrandom 0.4.3",
  "parking_lot",
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "stacker",
  "thiserror",
  "tokio",
  "tracing",
@@ -787,9 +841,9 @@ dependencies = [
 
 [[package]]
 name = "dekopon-broker-host"
-version = "0.38.0"
+version = "0.75.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c8d175d0d04733c0b7fe4954e520672dd72e01deb2e33565c68627b2303f838"
+checksum = "8ad3b1e7033cec057b3e713743c84ffa7eca0e3d11672ce223346911ef910ab0"
 dependencies = [
  "dekopon-broker-protocol",
  "dekopon-capability",
@@ -807,14 +861,15 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "wasmparser 0.259.0",
  "wasmtime",
 ]
 
 [[package]]
 name = "dekopon-broker-protocol"
-version = "0.38.0"
+version = "0.75.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17b8c57cff3d5df3982ef8620af843bf8f46b16dd8a660fa9a706ecf06b43358"
+checksum = "ad8a69c762bcf81230cbb7dbe5ba068c7f500334f419c5e5ed077b40654fca7d"
 dependencies = [
  "dekopon-capability",
  "dekopon-core",
@@ -828,9 +883,9 @@ dependencies = [
 
 [[package]]
 name = "dekopon-capability"
-version = "0.38.0"
+version = "0.75.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9e55129e8428da9a471194d455ebe79fda88dd02191718a207d9aca94ac2edc"
+checksum = "5659b178d61af678b0fb282899055e224d86c428d73d66b468303664bde28ef3"
 dependencies = [
  "dekopon-core",
  "serde",
@@ -840,30 +895,35 @@ dependencies = [
 
 [[package]]
 name = "dekopon-core"
-version = "0.38.0"
+version = "0.75.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edd9d645ac2ab787971e0fd705a16cc726e2e69667252ce69b3c4ee2b622a5c2"
+checksum = "0fef7c96fea84ee35704b1796ddcc66bc554c4978dc9cc2bd4b6d8eada4dbdd5"
 dependencies = [
  "base64 0.23.1",
  "libc",
  "serde",
+ "serde_json",
  "serde_yaml_ng",
  "thiserror",
 ]
 
 [[package]]
 name = "dekopon-http-host"
-version = "0.38.0"
+version = "0.75.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3bdfe02b7917f9d2a94d5b1506ecd4ac2104c02f70c9cea3882bce7e6e9a437"
+checksum = "00c89b54beb324056e4cb1e0dd45eb89b98e58fb202b811d2b14e3cdf570db00"
 dependencies = [
+ "aho-corasick",
  "base64 0.23.1",
  "bytes",
  "dekopon-capability",
  "dekopon-core",
  "dekopon-telemetry",
- "futures-util",
+ "flate2",
+ "http",
  "http-body",
+ "parking_lot",
+ "percent-encoding",
  "reqwest",
  "serde",
  "sha2 0.11.0",
@@ -875,13 +935,14 @@ dependencies = [
 
 [[package]]
 name = "dekopon-policy"
-version = "0.38.0"
+version = "0.75.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e96c19de005da5213743a1628f5d85768b6d3ffe209fde2e93f14b298bbf292"
+checksum = "3beb8c811fc657c1cc23a481309d2acacfd59feb89c2fc1b77e66899c4c16fa2"
 dependencies = [
  "cedar-policy",
  "dekopon-capability",
  "dekopon-core",
+ "serde",
  "serde_json",
  "sha2 0.11.0",
  "thiserror",
@@ -889,9 +950,9 @@ dependencies = [
 
 [[package]]
 name = "dekopon-provider-sdk"
-version = "0.38.0"
+version = "0.75.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe49ea6592207f2a81f2de62208347084c566d7b7aab1b0078986b9d0d898ab9"
+checksum = "7bfc20dc6e8efdc8fa8455cd5ac526c99a20a3ebb81f1d4fa68b1d703e06df98"
 dependencies = [
  "clap",
  "dekopon-capability",
@@ -904,19 +965,24 @@ dependencies = [
 
 [[package]]
 name = "dekopon-provider-sdk-testkit"
-version = "0.38.0"
+version = "0.75.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df4727635fb049cf3845c211b71d8c41c06297c7a5cf5678ba2c16ba8e4acde1"
+checksum = "816f1dc313ac523167d93c205604ff92419d7042019be79122a4dccc369e0759"
 dependencies = [
+ "axum",
  "dekopon-broker-host",
+ "dekopon-broker-protocol",
  "dekopon-capability",
  "dekopon-core",
  "dekopon-http-host",
  "dekopon-provider-sdk",
+ "hyper",
+ "hyper-util",
  "parking_lot",
  "rcgen",
  "rustls",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-rustls",
@@ -925,9 +991,9 @@ dependencies = [
 
 [[package]]
 name = "dekopon-storage-host"
-version = "0.38.0"
+version = "0.75.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c922c5ca46237b1c65a90928ebefcf9765ecdb79eaecf3374cb0dffd44b81cb"
+checksum = "8cb7a3dee88da61897f05eff0c975837f22a83f1894a40ce2d0656593463737c"
 dependencies = [
  "dekopon-capability",
  "dekopon-core",
@@ -943,12 +1009,13 @@ dependencies = [
 
 [[package]]
 name = "dekopon-telemetry"
-version = "0.38.0"
+version = "0.75.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94b702829c801132504d72a9019dfc7d509b44c6b33cfae69e0c427123ec0830"
+checksum = "fe4153bd4ecd0e5486b2819049e1a74e995af1ed525801f9d8fb4dd362713350"
 dependencies = [
  "opentelemetry",
  "parking_lot",
+ "serde_json",
  "tracing",
  "tracing-opentelemetry",
 ]
@@ -1124,7 +1191,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1144,6 +1211,17 @@ name = "fixedbitset"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
+
+[[package]]
+name = "flate2"
+version = "1.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
+dependencies = [
+ "crc32fast",
+ "miniz_oxide",
+ "zlib-rs",
+]
 
 [[package]]
 name = "fnv"
@@ -1385,6 +1463,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1407,6 +1491,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -1873,6 +1958,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 
 [[package]]
+name = "matchit"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1911,10 +2002,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "mime"
+version = "0.3.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
+
+[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
+name = "miniz_oxide"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
+dependencies = [
+ "adler2",
+ "simd-adler32",
+]
 
 [[package]]
 name = "mio"
@@ -2282,7 +2389,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2518,15 +2625,15 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.5"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags 2.13.2",
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2799,6 +2906,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "simd-adler32"
+version = "0.3.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
+
+[[package]]
 name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2957,7 +3070,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3720,7 +3833,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4108,6 +4221,12 @@ dependencies = [
  "quote",
  "syn 3.0.6",
 ]
+
+[[package]]
+name = "zlib-rs"
+version = "0.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112"
 
 [[package]]
 name = "zmij"
