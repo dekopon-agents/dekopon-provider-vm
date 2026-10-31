@@ -11,9 +11,7 @@ const SECRET: &str = "drn:com.xrl:secret:test:vm/token";
 /// Replays one authored job cassette for `input` against the cluster and a prefixed base.
 fn replay(exchange: &Value, input: &Value) {
     assert_eq!(exchange["version"], 1);
-    let query = exchange["request"]["query"]
-        .as_str()
-        .map_or_else(String::new, |q| format!("?{q}"));
+    assert_eq!(exchange["request"]["query"], Value::Null);
     for (base, host, uri) in [
         (
             "https://vm-runner.vm-runner.svc.cluster.local:8443",
@@ -50,16 +48,27 @@ fn replay(exchange: &Value, input: &Value) {
         let requests = native.requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].method, exchange["request"]["method"]);
-        assert_eq!(requests[0].uri, format!("{uri}{query}"));
+        assert_eq!(requests[0].uri, uri);
         assert_eq!(
             requests[0].uri,
             format!(
-                "{}{}{query}",
+                "{}{}",
                 base.trim_end_matches('/'),
                 exchange["request"]["path"].as_str().unwrap()
             )
         );
         assert!(requests[0].body.is_empty());
+        let headers: serde_json::Map<String, Value> = requests[0]
+            .headers
+            .iter()
+            .map(|h| {
+                (
+                    h.name.to_ascii_lowercase(),
+                    json!(std::str::from_utf8(&h.value).unwrap()),
+                )
+            })
+            .collect();
+        assert_eq!(Value::Object(headers), exchange["request"]["headers"]);
         for name in ["accept", "authorization"] {
             assert!(
                 !requests[0]
@@ -80,7 +89,6 @@ fn replay(exchange: &Value, input: &Value) {
 fn authored_job_cassette_replays_with_exact_owner_routing() {
     let exchange: Value =
         serde_json::from_str(include_str!("cassettes/vm/0001-GET-v1-jobs-job-1.json")).unwrap();
-    assert_eq!(exchange["request"]["query"], Value::Null);
     assert_eq!(
         exchange["response"]["body"]["json"],
         json!({"state":"running"})
@@ -89,12 +97,12 @@ fn authored_job_cassette_replays_with_exact_owner_routing() {
 }
 
 #[test]
-fn a_wait_command_reads_the_job_once_with_the_wait_query() {
+fn a_wait_command_reads_the_job_once_with_a_prefer_wait_header() {
     let exchange: Value = serde_json::from_str(include_str!(
-        "cassettes/vm/0002-GET-v1-jobs-job-1-waitMs-20000.json"
+        "cassettes/vm/0002-GET-v1-jobs-job-1-prefer-wait-20.json"
     ))
     .unwrap();
-    assert_eq!(exchange["request"]["query"], "waitMs=20000");
+    assert_eq!(exchange["request"]["headers"], json!({"prefer":"wait=20"}));
     let words = ["--job", "job-1", "--wait", "20", "--secret", SECRET].map(str::to_owned);
     let CommandRunOutcome::Proposed {
         capability, input, ..
@@ -103,7 +111,7 @@ fn a_wait_command_reads_the_job_once_with_the_wait_query() {
         panic!("expected proposal")
     };
     assert_eq!(capability.as_str(), "vm.job.get");
-    assert_eq!(input, json!({"jobId":"job-1","waitMs":20000}));
+    assert_eq!(input, json!({"jobId":"job-1","waitSeconds":20}));
     replay(&exchange, &input);
 }
 

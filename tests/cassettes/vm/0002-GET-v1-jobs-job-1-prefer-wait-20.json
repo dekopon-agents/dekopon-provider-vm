@@ -3,8 +3,10 @@
   "request": {
     "method": "GET",
     "path": "/v1/jobs/job-1",
-    "query": "waitMs=20000",
-    "headers": {},
+    "query": null,
+    "headers": {
+      "prefer": "wait=20"
+    },
     "body": null
   },
   "response": {

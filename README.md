@@ -27,7 +27,7 @@ help renders stdout at exit 0. Options take separate values, at most once.
 | `vm.job.get` | ReadOnly / Low | get job |
 | `vm.artifact.read` | ExternalWrite / Low | create-or-get session, then list/read; `.png`/`.jpg`/`.jpeg`/`.mp4` reads attach |
 
-Exec proposes `{profile,name,argv,stdinPiped?,stdinBudget?,deadlineMs}`; `stdinBudget` is set only for a piped argv proposal to preserve the 24,576-byte combined argv-and-stdin cap without carrying pipe bytes. The bounded UTF-8 stdin is read only during authorized invoke, before session creation. Jobs `{jobId,waitMs?}`, where `waitMs` (1000–25000) is sent as vm-runner's `waitMs` query; artifacts
+Exec proposes `{profile,name,argv,stdinPiped?,stdinBudget?,deadlineMs}`; `stdinBudget` is set only for a piped argv proposal to preserve the 24,576-byte combined argv-and-stdin cap without carrying pipe bytes. The bounded UTF-8 stdin is read only during authorized invoke, before session creation. Jobs `{jobId,waitSeconds?}`, where `waitSeconds` (1–25) is sent as the request header `Prefer: wait=<seconds>` (RFC 7240), never a query; artifacts
 `{profile,name,path?}`. Schemas are closed. Secret DRNs travel only beside input as
 `secretUse.httpBearer`: neither token nor Authorization header is available to the
 provider. The broker requires both a Cedar `secret.use` grant and a private-map binding.
@@ -94,9 +94,9 @@ DEKOPON_PROVIDER_COMPONENT=$PWD/vm-provider.wasm cargo test --locked --workspace
 
 The synthetic cassette `tests/cassettes/vm/0001-GET-v1-jobs-job-1.json` is authored
 from the scripted `state: running` job response in `tests/secret_authority.rs`,
-not recorded from a live service; `0002-GET-v1-jobs-job-1-waitMs-20000.json` is
+not recorded from a live service; `0002-GET-v1-jobs-job-1-prefer-wait-20.json` is
 authored from vm-runner job-wait's `ExecResult` body for a `--wait 20` read.
-Replay checks exact prefixed and configured cluster URIs, the exact query (none without `--wait`), the unchanged absence of Accept, no guest Authorization, and output.
+Replay checks exact prefixed and configured cluster URIs, no query, the exact request headers (`prefer: wait=20` only with `--wait`), the unchanged absence of Accept, no guest Authorization, and output.
 VM has no content URL inputs or model-facing API-origin controls.
 
 Tests use native mocks and loopback broker HTTP only. The component test requires

@@ -528,3 +528,65 @@ async fn the_artifacts_command_with_no_path_lists_through_the_built_component() 
         ]
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wait_read_through_the_broker_sends_one_prefer_header_under_the_query_free_binding() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let authority = listener.local_addr().unwrap().to_string();
+    let body = br#"{"exitCode":7,"outcome":"executed","stderr":"","stdout":"smoke result","truncated":false}"#;
+    let mut response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(body);
+    let server = serve(listener, vec![response]);
+    // The asset-root broker serves under /runner/api; its job binding keeps allowQuery false.
+    let root = tempfile::tempdir().unwrap();
+    let broker = broker(&authority, false, Some(root.path())).await;
+    let words = ["--job", "job-1", "--wait", "20", "--secret", SECRET].map(str::to_owned);
+    let CommandRunOutcome::Proposed {
+        input, secret_use, ..
+    } = broker
+        .run_command(&context(), None, None, "ssh", &words, false)
+        .await
+        .unwrap()
+    else {
+        panic!("expected proposal")
+    };
+    let (assets, mut stdout) = streams();
+    let result = broker
+        .invoke(
+            &context(),
+            None,
+            None,
+            request("wait", input, secret_use),
+            assets,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.result.outcome,
+        InvocationOutcome::Succeeded,
+        "{:?}",
+        result.result.error
+    );
+    let mut output = Vec::new();
+    stdout.read_to_end(&mut output).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output).unwrap(),
+        serde_json::from_slice::<Value>(body).unwrap()
+    );
+    let wires = server.join().unwrap();
+    assert_eq!(wires.len(), 1);
+    let wire = wires[0].to_ascii_lowercase();
+    assert_eq!(
+        wires[0].lines().next(),
+        Some("GET /runner/api/v1/jobs/job-1 HTTP/1.1")
+    );
+    assert_eq!(wire.matches("\r\nprefer:").count(), 1);
+    assert!(wire.contains("\r\nprefer: wait=20\r\n"));
+    assert_eq!(wire.matches("authorization:").count(), 1);
+    assert!(wire.contains(&format!("authorization: bearer {TOKEN}\r\n")));
+    assert!(!wires[0].contains(SECRET));
+}

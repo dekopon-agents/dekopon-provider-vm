@@ -355,14 +355,14 @@ fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 pub struct JobInput {
     #[schemars(regex(pattern = "^[A-Za-z0-9-]{1,128}$"))]
     pub(crate) job_id: String,
-    /// Server-side wait bound for vm-runnerd's `waitMs` query; absent reads at once.
-    #[schemars(range(min = 1000, max = 25000))]
+    /// Server-side wait bound, sent as `Prefer: wait=<seconds>`; absent reads at once.
+    #[schemars(range(min = 1, max = 25))]
     #[serde(
         default,
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
-    pub(crate) wait_ms: Option<u32>,
+    pub(crate) wait_seconds: Option<u32>,
 }
 
 enum Input {
@@ -395,8 +395,7 @@ fn input(op: Operation, value: Value) -> Result<Input, VmError> {
         }
         Operation::Job => {
             let v: JobInput = serde_json::from_value(value).map_err(|_| invalid())?;
-            if !command::job_id(&v.job_id)
-                || v.wait_ms.is_some_and(|ms| !(1_000..=25_000).contains(&ms))
+            if !command::job_id(&v.job_id) || v.wait_seconds.is_some_and(|s| !(1..=25).contains(&s))
             {
                 return Err(invalid());
             }
@@ -442,7 +441,7 @@ fn invoke_with<T: Transport>(
     } else {
         None
     };
-    let request = |verb, path: &str, body: Option<Value>, range: Option<&str>| {
+    let request = |verb, path: &str, body: Option<Value>, header: Option<(&str, &str)>| {
         let mut request = Request::new(
             verb,
             base.join(path).map_err(|_| error("invalid-settings"))?,
@@ -455,25 +454,27 @@ fn invoke_with<T: Transport>(
                     .map_err(|_| error("invalid-header"))?,
             );
         }
-        if let Some(range) = range {
+        if let Some((name, value)) = header {
             request
                 .headers
-                .push(Header::text("range", range).map_err(|_| error("invalid-header"))?);
+                .push(Header::text(name, value).map_err(|_| error("invalid-header"))?);
         }
         Ok::<_, VmError>(request)
     };
-    let mut call = |verb, path: &str, body: Option<Value>, range: Option<&str>| {
+    let mut call = |verb, path: &str, body: Option<Value>, header: Option<(&str, &str)>| {
         transport
-            .send(request(verb, path, body, range)?)
+            .send(request(verb, path, body, header)?)
             .map_err(map_http_error)
     };
     let (profile, name) = match &input {
         Input::Job(job) => {
-            let mut path = format!("/v1/jobs/{}", encode(&job.job_id));
-            if let Some(ms) = job.wait_ms {
-                path.push_str(&format!("?waitMs={ms}"));
-            }
-            let response = call(method::GET, &path, None, None)?;
+            let wait = job.wait_seconds.map(|s| format!("wait={s}"));
+            let response = call(
+                method::GET,
+                &format!("/v1/jobs/{}", encode(&job.job_id)),
+                None,
+                wait.as_deref().map(|wait| ("prefer", wait)),
+            )?;
             return json_response(response, &[200, 502]);
         }
         Input::Exec(v) => (&v.profile, &v.name),
@@ -517,7 +518,12 @@ fn invoke_with<T: Transport>(
                     let get = request(method::GET, &artifact_path, None, None)?;
                     return attach(&mut transport, get, &path, content_type);
                 }
-                let response = call(method::GET, &artifact_path, None, Some("bytes=0-65536"))?;
+                let response = call(
+                    method::GET,
+                    &artifact_path,
+                    None,
+                    Some(("range", "bytes=0-65536")),
+                )?;
                 artifact(response, &path)
             }
         },

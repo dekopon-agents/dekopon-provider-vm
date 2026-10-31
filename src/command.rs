@@ -125,7 +125,7 @@ fn parse(argv: &[String], stdin_piped: bool) -> Result<Proposal<Vm>, &'static st
             let id = job.filter(|s| job_id(s)).ok_or(USAGE)?;
             Proposal::to::<Job>(JobInput {
                 job_id: id.into(),
-                wait_ms: wait.map(|s| s * 1000),
+                wait_seconds: wait,
             })
         }
         Operation::Exec | Operation::Artifact if wait.is_some() => return Err(USAGE),

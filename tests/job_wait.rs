@@ -60,8 +60,15 @@ fn a_wait_poll_through_the_built_component_reads_running_then_the_result() {
         assert_eq!(output.http_calls.len(), 1);
         let request = output.http_request.unwrap();
         assert_eq!(request.method, "GET");
-        let query = if wait.is_some() { "?waitMs=20000" } else { "" };
-        assert_eq!(request.uri, format!("{base}v1/jobs/job-1{query}"));
+        assert_eq!(request.uri, format!("{base}v1/jobs/job-1"));
+        let prefer: Vec<_> = request
+            .headers
+            .iter()
+            .filter(|h| h.name.eq_ignore_ascii_case("prefer"))
+            .map(|h| h.value.as_slice())
+            .collect();
+        let expected: &[&[u8]] = if wait.is_some() { &[b"wait=20"] } else { &[] };
+        assert_eq!(prefer, expected);
         assert!(
             !request
                 .headers

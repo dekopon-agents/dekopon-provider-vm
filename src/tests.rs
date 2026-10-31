@@ -741,14 +741,17 @@ fn model_origin_controls_are_absent_and_rejected() {
 }
 
 #[test]
-fn a_wait_proposal_carries_the_bound_in_milliseconds() {
-    for (seconds, ms) in [("1", 1_000), ("20", 20_000), ("25", 25_000)] {
+fn a_wait_proposal_carries_the_bound_in_seconds() {
+    for (seconds, n) in [("1", 1), ("20", 20), ("25", 25)] {
         assert_eq!(
             proposal(
                 &["--job", "job-1", "--wait", seconds, "--secret", SECRET],
                 false
             ),
-            ("vm.job.get".into(), json!({"jobId":"job-1","waitMs":ms}))
+            (
+                "vm.job.get".into(),
+                json!({"jobId":"job-1","waitSeconds":n})
+            )
         );
     }
 }
@@ -780,17 +783,11 @@ fn a_wait_outside_one_to_twenty_five_whole_seconds_is_refused_before_http() {
             "{args:?}"
         );
     }
-    for wait in [
-        json!(0),
-        json!(999),
-        json!(25_001),
-        json!(null),
-        json!("5000"),
-    ] {
+    for wait in [json!(0), json!(26), json!(20_000), json!(null), json!("5")] {
         assert_eq!(
             invoke_with(
                 "vm.job.get",
-                json!({"jobId":"job-1","waitMs":wait}),
+                json!({"jobId":"job-1","waitSeconds":wait}),
                 &Base::from_static(DEFAULT_BASE),
                 |_| panic!("HTTP before validation")
             )
