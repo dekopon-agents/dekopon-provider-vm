@@ -1,16 +1,19 @@
 #![doc = "Authored synthetic VM job cassette replay and owner settings validation."]
 
-use dekopon_provider_sdk::provider::{Header, Response};
+use dekopon_provider_sdk::CommandRunOutcome;
+use dekopon_provider_sdk::provider::{Header, Response, command};
 use dekopon_provider_sdk_testkit::{HttpScript, Native};
 use dekopon_vm_provider::Vm;
 use serde_json::{Value, json};
 
-#[test]
-fn authored_job_cassette_replays_with_exact_owner_routing() {
-    let exchange: Value =
-        serde_json::from_str(include_str!("cassettes/vm/0001-GET-v1-jobs-job-1.json")).unwrap();
+const SECRET: &str = "drn:com.xrl:secret:test:vm/token";
+
+/// Replays one authored job cassette for `input` against the cluster and a prefixed base.
+fn replay(exchange: &Value, input: &Value) {
     assert_eq!(exchange["version"], 1);
-    assert_eq!(exchange["request"]["query"], Value::Null);
+    let query = exchange["request"]["query"]
+        .as_str()
+        .map_or_else(String::new, |q| format!("?{q}"));
     for (base, host, uri) in [
         (
             "https://vm-runner.vm-runner.svc.cluster.local:8443",
@@ -42,16 +45,16 @@ fn authored_job_cassette_replays_with_exact_owner_routing() {
                     body: serde_json::to_vec(&exchange["response"]["body"]["json"]).unwrap(),
                 },
             ));
-        let output = native.call("vm.job.get", r#"{"jobId":"job-1"}"#);
+        let output = native.call("vm.job.get", &input.to_string());
         assert_eq!(output.status, 0, "{}", output.stderr);
         let requests = native.requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].method, exchange["request"]["method"]);
-        assert_eq!(requests[0].uri, uri);
+        assert_eq!(requests[0].uri, format!("{uri}{query}"));
         assert_eq!(
             requests[0].uri,
             format!(
-                "{}{}",
+                "{}{}{query}",
                 base.trim_end_matches('/'),
                 exchange["request"]["path"].as_str().unwrap()
             )
@@ -68,9 +71,40 @@ fn authored_job_cassette_replays_with_exact_owner_routing() {
         }
         assert_eq!(
             serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-            json!({"state":"running"})
+            exchange["response"]["body"]["json"]
         );
     }
+}
+
+#[test]
+fn authored_job_cassette_replays_with_exact_owner_routing() {
+    let exchange: Value =
+        serde_json::from_str(include_str!("cassettes/vm/0001-GET-v1-jobs-job-1.json")).unwrap();
+    assert_eq!(exchange["request"]["query"], Value::Null);
+    assert_eq!(
+        exchange["response"]["body"]["json"],
+        json!({"state":"running"})
+    );
+    replay(&exchange, &json!({"jobId":"job-1"}));
+}
+
+#[test]
+fn a_wait_command_reads_the_job_once_with_the_wait_query() {
+    let exchange: Value = serde_json::from_str(include_str!(
+        "cassettes/vm/0002-GET-v1-jobs-job-1-waitMs-20000.json"
+    ))
+    .unwrap();
+    assert_eq!(exchange["request"]["query"], "waitMs=20000");
+    let words = ["--job", "job-1", "--wait", "20", "--secret", SECRET].map(str::to_owned);
+    let CommandRunOutcome::Proposed {
+        capability, input, ..
+    } = command::<Vm>(&words, false)
+    else {
+        panic!("expected proposal")
+    };
+    assert_eq!(capability.as_str(), "vm.job.get");
+    assert_eq!(input, json!({"jobId":"job-1","waitMs":20000}));
+    replay(&exchange, &input);
 }
 
 #[test]

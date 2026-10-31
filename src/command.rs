@@ -6,8 +6,8 @@ use crate::Operation;
 
 pub(crate) const MAX_ARGV: usize = 70;
 pub(crate) const MAX_BYTES: usize = 24_576;
-pub(crate) const USAGE: &str = "usage: ssh [--session NAME] --secret DRN [--timeout SECONDS] PROFILE -- ARGV...\n       ssh --job JOBID --secret DRN\n       ssh --artifacts [--session NAME] --secret DRN PROFILE [PATH]\ntry 'ssh --help'\n";
-const HELP: &str = "ssh: broker-authorized commands in vm-runner jails (not SSH transport).\n\nssh [--session NAME] --secret DRN [--timeout SECONDS] PROFILE -- ARGV...\nssh --job JOBID --secret DRN\nssh --artifacts [--session NAME] --secret DRN PROFILE [PATH]\n\nSession defaults to default; timeout is 1-25 seconds (default 25).\nNAME and PROFILE: lowercase letters, digits and hyphens, 1-63 characters,\nstarting with a letter or digit. Stdin passes through to exec.\n--secret requires a bare drn:<authority>:secret:<realm>:<path>.\nThe broker authorizes and injects the Bearer token; this provider never sees it.\nArtifacts return UTF-8 text up to 64 KiB, otherwise metadata only.\n.png/.jpg/.jpeg attach for inspection; .mp4 attaches for outbound use only.\nA separately authorized `asset send N` delivers an attached asset to chat.\nArtifact reads require a flat name: [A-Za-z0-9][A-Za-z0-9._-]{0,127}.\nCopy other files to a flat name under /artifacts first; listing shows all paths.\n-h, --help prints this help. No retries; poll an unknown outcome with --job.\n";
+pub(crate) const USAGE: &str = "usage: ssh [--session NAME] --secret DRN [--timeout SECONDS] PROFILE -- ARGV...\n       ssh --job JOBID [--wait SECONDS] --secret DRN\n       ssh --artifacts [--session NAME] --secret DRN PROFILE [PATH]\ntry 'ssh --help'\n";
+pub(crate) const HELP: &str = "ssh: broker-authorized commands in vm-runner jails (not SSH transport).\n\nssh [--session NAME] --secret DRN [--timeout SECONDS] PROFILE -- ARGV...\nssh --job JOBID [--wait SECONDS] --secret DRN\nssh --artifacts [--session NAME] --secret DRN PROFILE [PATH]\n\nSession defaults to default; timeout is 1-25 seconds (default 25).\n--wait 1-25 seconds (no default) lets vm-runner hold a running job read until\nthe job finishes or the wait ends; poll with --wait, not sleep.\nNAME and PROFILE: lowercase letters, digits and hyphens, 1-63 characters,\nstarting with a letter or digit. Stdin passes through to exec.\n--secret requires a bare drn:<authority>:secret:<realm>:<path>.\nThe broker authorizes and injects the Bearer token; this provider never sees it.\nArtifacts return UTF-8 text up to 64 KiB, otherwise metadata only.\n.png/.jpg/.jpeg attach for inspection; .mp4 attaches for outbound use only.\nA separately authorized `asset send N` delivers an attached asset to chat.\nArtifact reads require a flat name: [A-Za-z0-9][A-Za-z0-9._-]{0,127}.\nCopy other files to a flat name under /artifacts first; listing shows all paths.\nWithout PATH, --artifacts lists the session's artifacts.\njail tools: `browse --help` (run: ssh --secret DRN PROFILE -- browse --help).\n-h, --help prints this help. No retries; poll an unknown outcome with --job.\n";
 const SECRET: &str = "ssh: --secret requires one bare secret DRN\n";
 pub(crate) const ARTIFACT_PATH: &str = "ssh: artifact reads require a flat name; copy the file to a flat name under /artifacts first (e.g. ssh --secret DRN PROFILE -- cp 'dir/a b.png' /artifacts/shot.png)\n";
 
@@ -44,6 +44,7 @@ fn parse(argv: &[String], stdin_piped: bool) -> Result<Proposal<Vm>, &'static st
     let mut session = None;
     let mut secret = None;
     let mut timeout = None;
+    let mut wait = None;
     let mut operation = None;
     let mut job = None;
     let mut positional = Vec::new();
@@ -77,17 +78,13 @@ fn parse(argv: &[String], stdin_piped: bool) -> Result<Proposal<Vm>, &'static st
                 if timeout.is_some() {
                     return Err(USAGE);
                 }
-                let seconds = take(argv, &mut index)?;
-                if !seconds.bytes().all(|b| b.is_ascii_digit()) {
+                timeout = Some(seconds(take(argv, &mut index)?)?);
+            }
+            "--wait" => {
+                if wait.is_some() {
                     return Err(USAGE);
                 }
-                timeout = Some(
-                    seconds
-                        .parse::<u32>()
-                        .ok()
-                        .filter(|n| (1..=25).contains(n))
-                        .ok_or(USAGE)?,
-                );
+                wait = Some(seconds(take(argv, &mut index)?)?);
             }
             "--job" => {
                 if operation.is_some() {
@@ -126,8 +123,12 @@ fn parse(argv: &[String], stdin_piped: bool) -> Result<Proposal<Vm>, &'static st
                 return Err(USAGE);
             }
             let id = job.filter(|s| job_id(s)).ok_or(USAGE)?;
-            Proposal::to::<Job>(JobInput { job_id: id.into() })
+            Proposal::to::<Job>(JobInput {
+                job_id: id.into(),
+                wait_ms: wait.map(|s| s * 1000),
+            })
         }
+        Operation::Exec | Operation::Artifact if wait.is_some() => return Err(USAGE),
         Operation::Exec => {
             if positional.len() != 1 || !self::name(positional[0]) {
                 return Err(USAGE);
@@ -171,6 +172,18 @@ fn parse(argv: &[String], stdin_piped: bool) -> Result<Proposal<Vm>, &'static st
         }
     };
     Ok(proposal.with_secret_use(SecretUseProposal::HttpBearer { secret }))
+}
+
+/// A whole number of seconds, 1-25.
+fn seconds(value: &str) -> Result<u32, &'static str> {
+    if !value.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(USAGE);
+    }
+    value
+        .parse::<u32>()
+        .ok()
+        .filter(|n| (1..=25).contains(n))
+        .ok_or(USAGE)
 }
 
 fn take<'a>(args: &'a [String], index: &mut usize) -> Result<&'a str, &'static str> {

@@ -44,7 +44,11 @@ pub struct VmArgs {
     words: Vec<String>,
 }
 #[derive(clap::Parser)]
-#[command(name = "ssh", about = "Broker-authorized commands in vm-runner jails")]
+#[command(
+    name = "ssh",
+    about = "Broker-authorized commands in vm-runner jails",
+    override_help = command::HELP
+)]
 struct RawArgs {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
     words: Vec<String>,
@@ -68,7 +72,7 @@ impl clap::FromArgMatches for VmArgs {
             }
             if matches!(
                 word.as_str(),
-                "--secret" | "--session" | "--timeout" | "--job"
+                "--secret" | "--session" | "--timeout" | "--job" | "--wait"
             ) {
                 index += 2;
                 continue;
@@ -330,14 +334,19 @@ pub struct ArtifactInput {
     #[schemars(regex(pattern = "^[a-z0-9][a-z0-9-]{0,62}$"))]
     pub(crate) name: String,
     #[schemars(regex(pattern = "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"))]
-    #[serde(default, deserialize_with = "present_path")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub(crate) path: Option<String>,
 }
 
-fn present_path<'de, D: serde::Deserializer<'de>>(
+/// An optional field is absent or a value; an explicit `null` is refused.
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     deserializer: D,
-) -> Result<Option<String>, D::Error> {
-    String::deserialize(deserializer).map(Some)
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -346,6 +355,14 @@ fn present_path<'de, D: serde::Deserializer<'de>>(
 pub struct JobInput {
     #[schemars(regex(pattern = "^[A-Za-z0-9-]{1,128}$"))]
     pub(crate) job_id: String,
+    /// Server-side wait bound for vm-runnerd's `waitMs` query; absent reads at once.
+    #[schemars(range(min = 1000, max = 25000))]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) wait_ms: Option<u32>,
 }
 
 enum Input {
@@ -378,7 +395,9 @@ fn input(op: Operation, value: Value) -> Result<Input, VmError> {
         }
         Operation::Job => {
             let v: JobInput = serde_json::from_value(value).map_err(|_| invalid())?;
-            if !command::job_id(&v.job_id) {
+            if !command::job_id(&v.job_id)
+                || v.wait_ms.is_some_and(|ms| !(1_000..=25_000).contains(&ms))
+            {
                 return Err(invalid());
             }
             Ok(Input::Job(v))
@@ -450,12 +469,11 @@ fn invoke_with<T: Transport>(
     };
     let (profile, name) = match &input {
         Input::Job(job) => {
-            let response = call(
-                method::GET,
-                &format!("/v1/jobs/{}", encode(&job.job_id)),
-                None,
-                None,
-            )?;
+            let mut path = format!("/v1/jobs/{}", encode(&job.job_id));
+            if let Some(ms) = job.wait_ms {
+                path.push_str(&format!("?waitMs={ms}"));
+            }
+            let response = call(method::GET, &path, None, None)?;
             return json_response(response, &[200, 502]);
         }
         Input::Exec(v) => (&v.profile, &v.name),

@@ -607,11 +607,13 @@ fn failed_mp4_reads_attach_nothing_and_release_the_writer_and_body() {
 }
 
 #[test]
-fn absent_path_still_lists_artifacts() {
+fn an_artifacts_command_with_no_path_lists() {
+    let (capability, input) = proposal(&["--artifacts", "--secret", SECRET, "travel"], false);
+    assert_eq!(input, json!({"profile":"travel","name":"default"}));
     let log = Shared::default();
     let result = invoke_with(
-        "vm.artifact.read",
-        json!({"profile":"travel","name":"default"}),
+        &capability,
+        input,
         &Base::from_static(DEFAULT_BASE),
         Fake {
             log: log.clone(),
@@ -736,4 +738,85 @@ fn model_origin_controls_are_absent_and_rejected() {
             CommandRunOutcome::Proposed { .. }
         ));
     }
+}
+
+#[test]
+fn a_wait_proposal_carries_the_bound_in_milliseconds() {
+    for (seconds, ms) in [("1", 1_000), ("20", 20_000), ("25", 25_000)] {
+        assert_eq!(
+            proposal(
+                &["--job", "job-1", "--wait", seconds, "--secret", SECRET],
+                false
+            ),
+            ("vm.job.get".into(), json!({"jobId":"job-1","waitMs":ms}))
+        );
+    }
+}
+
+#[test]
+fn a_wait_outside_one_to_twenty_five_whole_seconds_is_refused_before_http() {
+    for wait in ["0", "26", "ten", "", "-1", "1.5", "+5", "4294967297"] {
+        assert!(
+            matches!(
+                command(&["--job", "job-1", "--wait", wait, "--secret", SECRET], false),
+                CommandRunOutcome::Failed { error } if error.code == "usage"
+            ),
+            "{wait:?}"
+        );
+    }
+    for args in [
+        vec![
+            "--job", "job-1", "--wait", "5", "--wait", "5", "--secret", SECRET,
+        ],
+        vec!["--job", "job-1", "--secret", SECRET, "--wait"],
+        vec!["--wait", "5", "--secret", SECRET, "travel", "--", "pwd"],
+        vec!["--artifacts", "--wait", "5", "--secret", SECRET, "travel"],
+    ] {
+        assert!(
+            matches!(
+                command(&args, false),
+                CommandRunOutcome::Failed { error } if error.code == "usage"
+            ),
+            "{args:?}"
+        );
+    }
+    for wait in [
+        json!(0),
+        json!(999),
+        json!(25_001),
+        json!(null),
+        json!("5000"),
+    ] {
+        assert_eq!(
+            invoke_with(
+                "vm.job.get",
+                json!({"jobId":"job-1","waitMs":wait}),
+                &Base::from_static(DEFAULT_BASE),
+                |_| panic!("HTTP before validation")
+            )
+            .unwrap_err()
+            .code()
+            .as_str(),
+            "invalid-input",
+            "{wait}"
+        );
+    }
+}
+
+#[test]
+fn the_help_names_wait_and_the_jails_own_browse_help() {
+    for flag in ["--help", "-h"] {
+        let CommandRunOutcome::Rendered {
+            stdout,
+            stderr,
+            status: 0,
+        } = command(&[flag], false)
+        else {
+            panic!("expected rendered help for {flag}")
+        };
+        assert_eq!((stdout.as_str(), stderr.as_str()), (command::HELP, ""));
+    }
+    assert!(command::HELP.contains("\nssh --job JOBID [--wait SECONDS] --secret DRN\n"));
+    assert!(command::HELP.contains("\njail tools: `browse --help`"));
+    assert!(command::USAGE.contains(" ssh --job JOBID [--wait SECONDS] --secret DRN\n"));
 }

@@ -314,17 +314,11 @@ async fn cedar_denies_before_http_and_permitted_job_get_injects_exactly_one_bear
     assert!(!wire.contains(SECRET));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn component_attaches_complete_mp4_without_a_send_grant() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let authority = listener.local_addr().unwrap().to_string();
-    let bytes: Vec<u8> = (0..150_000).map(|i| (i % 251) as u8).collect();
-    let digest = hex::encode(Sha256::digest(&bytes));
-    let expected = bytes.clone();
-    let header_digest = digest.clone();
-    let server = thread::spawn(move || {
+/// Answers one loopback connection per response, in order; returns each request's head.
+fn serve(listener: TcpListener, responses: Vec<Vec<u8>>) -> thread::JoinHandle<Vec<String>> {
+    thread::spawn(move || {
         let mut paths = Vec::new();
-        for index in 0..2 {
+        for response in responses {
             let (mut stream, _) = listener.accept().unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
@@ -358,24 +352,34 @@ async fn component_attaches_complete_mp4_without_a_send_grant() {
                 request.extend_from_slice(&buf[..n]);
             }
             paths.push(headers);
-            if index == 0 {
-                let body = br#"{"sessionId":"session-1"}"#;
-                write!(
-                    stream,
-                    "HTTP/1.1 201 Created\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                )
-                .unwrap();
-                stream.write_all(body).unwrap();
-            } else {
-                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nsha256: {header_digest}\r\nConnection: close\r\n\r\n", bytes.len()).unwrap();
-                for chunk in bytes.chunks(65_536) {
-                    stream.write_all(chunk).unwrap();
-                }
+            for chunk in response.chunks(65_536) {
+                stream.write_all(chunk).unwrap();
             }
         }
         paths
-    });
+    })
+}
+#[tokio::test(flavor = "multi_thread")]
+async fn component_attaches_complete_mp4_without_a_send_grant() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let authority = listener.local_addr().unwrap().to_string();
+    let bytes: Vec<u8> = (0..150_000).map(|i| (i % 251) as u8).collect();
+    let digest = hex::encode(Sha256::digest(&bytes));
+    let expected = bytes.clone();
+    let session = br#"{"sessionId":"session-1"}"#;
+    let mut created = format!(
+        "HTTP/1.1 201 Created\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        session.len()
+    )
+    .into_bytes();
+    created.extend_from_slice(session);
+    let mut clip = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nsha256: {digest}\r\nConnection: close\r\n\r\n",
+        bytes.len()
+    )
+    .into_bytes();
+    clip.extend_from_slice(&bytes);
+    let server = serve(listener, vec![created, clip]);
     let root = tempfile::tempdir().unwrap();
     let broker = broker(&authority, false, Some(root.path())).await;
     let (assets, mut stdout) = streams();
@@ -457,4 +461,70 @@ async fn component_attaches_complete_mp4_without_a_send_grant() {
         );
     }
     assert!(!paths[1].to_ascii_lowercase().contains("range:"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_artifacts_command_with_no_path_lists_through_the_built_component() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let authority = listener.local_addr().unwrap().to_string();
+    let response = |status: &str, body: &[u8]| {
+        let mut bytes = format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        bytes.extend_from_slice(body);
+        bytes
+    };
+    let server = serve(
+        listener,
+        vec![
+            response("201 Created", br#"{"sessionId":"session-1"}"#),
+            response("200 OK", br#"["clip.mp4","notes/a.txt"]"#),
+        ],
+    );
+    let broker = broker(&authority, false, None).await;
+    let words = ["--artifacts", "--secret", SECRET, "travel"].map(str::to_owned);
+    let CommandRunOutcome::Proposed {
+        capability,
+        input,
+        secret_use,
+    } = broker
+        .run_command(&context(), None, None, "ssh", &words, false)
+        .await
+        .unwrap()
+    else {
+        panic!("expected proposal")
+    };
+    assert_eq!(capability.as_str(), "vm.artifact.read");
+    let mut call = request("list", input, secret_use);
+    call.capability = capability;
+    let (assets, mut stdout) = streams();
+    let result = broker
+        .invoke(&context(), None, None, call, assets)
+        .await
+        .unwrap();
+    assert_eq!(
+        result.result.outcome,
+        InvocationOutcome::Succeeded,
+        "{:?}",
+        result.result.error
+    );
+    let mut output = Vec::new();
+    stdout.read_to_end(&mut output).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output).unwrap(),
+        json!(["clip.mp4", "notes/a.txt"])
+    );
+    let paths = server.join().unwrap();
+    assert_eq!(
+        paths
+            .iter()
+            .map(|wire| wire.lines().next().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "POST /v1/sessions HTTP/1.1",
+            "GET /v1/sessions/session-1/artifacts HTTP/1.1"
+        ]
+    );
 }

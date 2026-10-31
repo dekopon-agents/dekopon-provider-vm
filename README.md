@@ -5,12 +5,17 @@ not an SSH transport. The broker owns HTTP, credentials and authorization.
 
 ```text
 ssh [--session NAME] --secret DRN [--timeout SECONDS] PROFILE -- ARGV...
-ssh --job JOBID --secret DRN
+ssh --job JOBID [--wait SECONDS] --secret DRN
 ssh --artifacts [--session NAME] --secret DRN PROFILE [PATH]
 ssh -h|--help
 ```
 
-Session defaults to `default`; timeout is 1–25 seconds, default 25. NAME and PROFILE
+Session defaults to `default`; timeout is 1–25 seconds, default 25. `--wait` is
+1–25 seconds with no default: vm-runner holds a running job read until the job
+finishes or the wait ends, so polling needs no `sleep` loop; an older vm-runner
+ignores it and answers at once. Without PATH, `--artifacts` lists the session's
+artifacts. The jail's own tools document themselves: `browse --help`, run as
+`ssh --secret DRN PROFILE -- browse --help`. NAME and PROFILE
 match `^[a-z0-9][a-z0-9-]{0,62}$`. Arguments after `--` are literal argv, not a shell
 script; stdin passes through to exec. At most 70 argv entries and 24,576 aggregate
 UTF-8 bytes across argv and stdin. Malformed forms render fixed stderr at exit 2;
@@ -22,7 +27,7 @@ help renders stdout at exit 0. Options take separate values, at most once.
 | `vm.job.get` | ReadOnly / Low | get job |
 | `vm.artifact.read` | ExternalWrite / Low | create-or-get session, then list/read; `.png`/`.jpg`/`.jpeg`/`.mp4` reads attach |
 
-Exec proposes `{profile,name,argv,stdinPiped?,stdinBudget?,deadlineMs}`; `stdinBudget` is set only for a piped argv proposal to preserve the 24,576-byte combined argv-and-stdin cap without carrying pipe bytes. The bounded UTF-8 stdin is read only during authorized invoke, before session creation. Jobs `{jobId}`; artifacts
+Exec proposes `{profile,name,argv,stdinPiped?,stdinBudget?,deadlineMs}`; `stdinBudget` is set only for a piped argv proposal to preserve the 24,576-byte combined argv-and-stdin cap without carrying pipe bytes. The bounded UTF-8 stdin is read only during authorized invoke, before session creation. Jobs `{jobId,waitMs?}`, where `waitMs` (1000–25000) is sent as vm-runner's `waitMs` query; artifacts
 `{profile,name,path?}`. Schemas are closed. Secret DRNs travel only beside input as
 `secretUse.httpBearer`: neither token nor Authorization header is available to the
 provider. The broker requires both a Cedar `secret.use` grant and a private-map binding.
@@ -89,8 +94,9 @@ DEKOPON_PROVIDER_COMPONENT=$PWD/vm-provider.wasm cargo test --locked --workspace
 
 The synthetic cassette `tests/cassettes/vm/0001-GET-v1-jobs-job-1.json` is authored
 from the scripted `state: running` job response in `tests/secret_authority.rs`,
-not recorded from a live service. Replay checks exact prefixed and configured cluster
-URIs, no query, the unchanged absence of Accept, no guest Authorization, and output.
+not recorded from a live service; `0002-GET-v1-jobs-job-1-waitMs-20000.json` is
+authored from vm-runner job-wait's `ExecResult` body for a `--wait 20` read.
+Replay checks exact prefixed and configured cluster URIs, the exact query (none without `--wait`), the unchanged absence of Accept, no guest Authorization, and output.
 VM has no content URL inputs or model-facing API-origin controls.
 
 Tests use native mocks and loopback broker HTTP only. The component test requires
