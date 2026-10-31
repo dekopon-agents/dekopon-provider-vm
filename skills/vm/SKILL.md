@@ -47,10 +47,11 @@ returns a `jobId` with `state` `unknown`; the work may still be running.
 Ask for the job instead of looping on `sleep`:
 
 ```text
-ssh --job ID --secret DRN --wait 20
+ssh --job ID --wait 20 --secret DRN
 ```
 
-`--wait SECONDS` is 1 to 25. Repeat it with the same `ID` until the state is final, and only then list and attach
+`--wait SECONDS` is 1 to 25 and has no default. It holds a running job read until the job
+finishes or the wait ends. Repeat it with the same `ID` until the state is final, and only then list and attach
 the files.
 Nothing retries on its own, and an exec is never re-run for you.
 
@@ -61,9 +62,10 @@ ssh --artifacts --secret DRN PROFILE
 ssh --artifacts --secret DRN PROFILE NAME.mp4
 ```
 
-The first lists every file. The second reads one file by a flat name that matches
+Without a path, `--artifacts` lists the session's artifacts, every path. The second reads one file by a flat name that matches
 `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`; a name ending `.mp4`, `.png`, `.jpg` or `.jpeg`
-is attached as a chat asset (8 MiB at most) and the result says `attached`. If a file
+is attached as a chat asset (8 MiB at most) and the result says `attached`. A `.png` or
+`.jpg` attaches for you to inspect; an `.mp4` attaches only to be sent on. If a file
 sits in a subdirectory or its name has spaces, copy it to a flat name first:
 
 ```text
