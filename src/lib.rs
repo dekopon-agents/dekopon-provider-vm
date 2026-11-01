@@ -44,7 +44,11 @@ pub struct VmArgs {
     words: Vec<String>,
 }
 #[derive(clap::Parser)]
-#[command(name = "ssh", about = "Broker-authorized commands in vm-runner jails")]
+#[command(
+    name = "ssh",
+    about = "Broker-authorized commands in vm-runner jails",
+    override_help = command::HELP
+)]
 struct RawArgs {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
     words: Vec<String>,
@@ -68,7 +72,7 @@ impl clap::FromArgMatches for VmArgs {
             }
             if matches!(
                 word.as_str(),
-                "--secret" | "--session" | "--timeout" | "--job"
+                "--secret" | "--session" | "--timeout" | "--job" | "--wait"
             ) {
                 index += 2;
                 continue;
@@ -330,14 +334,19 @@ pub struct ArtifactInput {
     #[schemars(regex(pattern = "^[a-z0-9][a-z0-9-]{0,62}$"))]
     pub(crate) name: String,
     #[schemars(regex(pattern = "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"))]
-    #[serde(default, deserialize_with = "present_path")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub(crate) path: Option<String>,
 }
 
-fn present_path<'de, D: serde::Deserializer<'de>>(
+/// An optional field is absent or a value; an explicit `null` is refused.
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     deserializer: D,
-) -> Result<Option<String>, D::Error> {
-    String::deserialize(deserializer).map(Some)
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -346,6 +355,14 @@ fn present_path<'de, D: serde::Deserializer<'de>>(
 pub struct JobInput {
     #[schemars(regex(pattern = "^[A-Za-z0-9-]{1,128}$"))]
     pub(crate) job_id: String,
+    /// Server-side wait bound, sent as `Prefer: wait=<seconds>`; absent reads at once.
+    #[schemars(range(min = 1, max = 25))]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) wait_seconds: Option<u32>,
 }
 
 enum Input {
@@ -378,7 +395,8 @@ fn input(op: Operation, value: Value) -> Result<Input, VmError> {
         }
         Operation::Job => {
             let v: JobInput = serde_json::from_value(value).map_err(|_| invalid())?;
-            if !command::job_id(&v.job_id) {
+            if !command::job_id(&v.job_id) || v.wait_seconds.is_some_and(|s| !(1..=25).contains(&s))
+            {
                 return Err(invalid());
             }
             Ok(Input::Job(v))
@@ -423,7 +441,7 @@ fn invoke_with<T: Transport>(
     } else {
         None
     };
-    let request = |verb, path: &str, body: Option<Value>, range: Option<&str>| {
+    let request = |verb, path: &str, body: Option<Value>, header: Option<(&str, &str)>| {
         let mut request = Request::new(
             verb,
             base.join(path).map_err(|_| error("invalid-settings"))?,
@@ -436,25 +454,26 @@ fn invoke_with<T: Transport>(
                     .map_err(|_| error("invalid-header"))?,
             );
         }
-        if let Some(range) = range {
+        if let Some((name, value)) = header {
             request
                 .headers
-                .push(Header::text("range", range).map_err(|_| error("invalid-header"))?);
+                .push(Header::text(name, value).map_err(|_| error("invalid-header"))?);
         }
         Ok::<_, VmError>(request)
     };
-    let mut call = |verb, path: &str, body: Option<Value>, range: Option<&str>| {
+    let mut call = |verb, path: &str, body: Option<Value>, header: Option<(&str, &str)>| {
         transport
-            .send(request(verb, path, body, range)?)
+            .send(request(verb, path, body, header)?)
             .map_err(map_http_error)
     };
     let (profile, name) = match &input {
         Input::Job(job) => {
+            let wait = job.wait_seconds.map(|s| format!("wait={s}"));
             let response = call(
                 method::GET,
                 &format!("/v1/jobs/{}", encode(&job.job_id)),
                 None,
-                None,
+                wait.as_deref().map(|wait| ("prefer", wait)),
             )?;
             return json_response(response, &[200, 502]);
         }
@@ -499,7 +518,12 @@ fn invoke_with<T: Transport>(
                     let get = request(method::GET, &artifact_path, None, None)?;
                     return attach(&mut transport, get, &path, content_type);
                 }
-                let response = call(method::GET, &artifact_path, None, Some("bytes=0-65536"))?;
+                let response = call(
+                    method::GET,
+                    &artifact_path,
+                    None,
+                    Some(("range", "bytes=0-65536")),
+                )?;
                 artifact(response, &path)
             }
         },
