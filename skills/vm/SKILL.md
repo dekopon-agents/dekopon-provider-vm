@@ -42,19 +42,21 @@ start a second recorder.
 
 ## 3. Poll a job
 
-Each call ends after at most 25 seconds. A recording, or a long batch, can outlive that and
-returns a `jobId` with `state` `unknown`; the work may still be running.
-Ask for the job instead of looping on `sleep`:
+Each call ends after at most 25 seconds. A recording, or a long batch, can outlive that.
+The first response then carries `outcome` `unknown` and a `jobId`: the work may still be
+running. Ask for the job instead of looping on `sleep`:
 
 ```text
 ssh --job ID --wait 20 --secret DRN
 ```
 
 `--wait` is 1-25 seconds (no default) and lets vm-runner hold a running job read until
-the job finishes or the wait ends; poll with `--wait`, not sleep. Repeat it with the same
-`ID` until the state is final, and only then list and attach the files. On a `--wait`
-poll, `vm-unavailable` can mean another wait already holds the single wait slot, so retry
-later rather than treating the VM as down.
+the job finishes or the wait ends; poll with `--wait`, not sleep. While the answer is
+`{"state":"running"}`, repeat the same command with the same `ID`. Stop when `outcome`
+is terminal: `executed` (read `exitCode`, `stdout` and `stderr`) or `not_executed` (read
+`reason`; the command never ran). List and attach the recording only after `executed`
+with `exitCode` 0. On a `--wait` poll, `vm-unavailable` can mean another wait already
+holds the single wait slot, so retry later rather than treating the VM as down.
 Nothing retries on its own, and an exec is never re-run for you.
 
 ## 4. List, then read to attach

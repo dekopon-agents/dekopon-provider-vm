@@ -66,9 +66,10 @@ fn the_skill_names_no_drn_url_or_installation_value() {
 fn every_ssh_line_the_skill_shows_parses_into_a_proposal() {
     let mut seen = 0;
     for line in SKILL.lines().filter(|l| l.starts_with("ssh ")) {
-        let words: Vec<String> = line
-            .split_whitespace()
-            .map(|w| match w {
+        let words: Vec<String> = shlex::split(line)
+            .unwrap_or_else(|| panic!("{line:?} has unbalanced quotes"))
+            .iter()
+            .map(|w| match w.as_str() {
                 "PROFILE" => "jail",
                 "DRN" => DRN,
                 "ID" => "job-1",
