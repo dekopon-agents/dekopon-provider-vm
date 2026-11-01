@@ -54,8 +54,8 @@ ssh --job ID --wait 20 --secret DRN
 the job finishes or the wait ends; poll with `--wait`, not sleep. While the answer is
 `{"state":"running"}`, repeat the same command with the same `ID`. Stop when `outcome`
 is terminal: `executed` (read `exitCode`, `stdout` and `stderr`) or `not_executed` (read
-`reason`; the command never ran). List and attach the recording only after `executed`
-with `exitCode` 0. On a `--wait` poll, `vm-unavailable` can mean another wait already
+`reason`; `unknown` means execution could not be confirmed). List and attach the
+recording only after `executed` with `exitCode` 0. On a `--wait` poll, `vm-unavailable` can mean another wait already
 holds the single wait slot, so retry later rather than treating the VM as down.
 Nothing retries on its own, and an exec is never re-run for you.
 
