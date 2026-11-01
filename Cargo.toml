@@ -32,6 +32,7 @@ dekopon-broker-protocol = "=0.75.0"
 dekopon-capability = "=0.75.0"
 dekopon-core = "=0.75.0"
 dekopon-http-host = "=0.75.0"
+shlex = "=2.0.1"
 tempfile = "=3.27.0"
 tokio = { version = "=1.53.3", features = ["macros", "rt-multi-thread", "time"] }
 
