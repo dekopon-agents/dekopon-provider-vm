@@ -53,7 +53,7 @@ fn the_skill_names_no_drn_url_or_installation_value() {
         "www.",
         "example-caller",
         "example-agent",
-        "vm-runner",
+        "vm-runner.vm-runner",
         "com.xrl",
         "travel",
         "svc.cluster",

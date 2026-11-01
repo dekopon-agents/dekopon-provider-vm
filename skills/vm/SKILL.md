@@ -50,9 +50,11 @@ Ask for the job instead of looping on `sleep`:
 ssh --job ID --wait 20 --secret DRN
 ```
 
-`--wait SECONDS` is 1 to 25 and has no default. It holds a running job read until the job
-finishes or the wait ends. Repeat it with the same `ID` until the state is final, and only then list and attach
-the files.
+`--wait` is 1-25 seconds (no default) and lets vm-runner hold a running job read until
+the job finishes or the wait ends; poll with `--wait`, not sleep. Repeat it with the same
+`ID` until the state is final, and only then list and attach the files. On a `--wait`
+poll, `vm-unavailable` can mean another wait already holds the single wait slot, so retry
+later rather than treating the VM as down.
 Nothing retries on its own, and an exec is never re-run for you.
 
 ## 4. List, then read to attach
@@ -62,10 +64,11 @@ ssh --artifacts --secret DRN PROFILE
 ssh --artifacts --secret DRN PROFILE NAME.mp4
 ```
 
-Without a path, `--artifacts` lists the session's artifacts, every path. The second reads one file by a flat name that matches
-`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`; a name ending `.mp4`, `.png`, `.jpg` or `.jpeg`
-is attached as a chat asset (8 MiB at most) and the result says `attached`. A `.png` or
-`.jpg` attaches for you to inspect; an `.mp4` attaches only to be sent on. If a file
+The first line lists: without PATH, `--artifacts` lists the session's artifacts. The
+second reads one file by a flat name that matches `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. A
+name ending `.mp4`, `.png`, `.jpg` or `.jpeg` is attached as a chat asset (8 MiB at most)
+and the result says `attached`. `.png`/`.jpg`/`.jpeg` attach for inspection; `.mp4`
+attaches for outbound use only. If a file
 sits in a subdirectory or its name has spaces, copy it to a flat name first:
 
 ```text
