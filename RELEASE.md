@@ -11,8 +11,9 @@ is authoritative; check it before each release.
 2. Before tagging, verify the version is unused as a Git tag, a draft or published GitHub
    release, and `ghcr.io/dekopon-agents/provider-vm:<version>`. The OCI tag omits the `v` prefix.
    The workflow does not check for an existing OCI tag before pushing it.
-3. After merge and explicit release authorization, push an annotated `vX.Y.Z` tag on the
-   approved `main` commit. The workflow checks annotation, event SHA, package version, and
+3. After merge and explicit release authorization, dispatch the `Cut release` workflow with
+   `tags: vX.Y.Z` and the approved `main` commit as `sha`, first as a dry run; it creates the
+   annotated tag, and the tag workflow checks annotation, event SHA, package version, and
    main ancestry. Release preparation alone does not authorize merging or tagging.
 4. The workflow runs formatting, dependency policy, host/wasm clippy, component build/checksum,
    real-component tests, and SBOM generation, then attests the component and SBOM. It creates
