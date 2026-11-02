@@ -5,7 +5,7 @@ secretMapPath: /etc/dekopon/secret-map.yaml
 providers: [/opt/dekopon/providers/vm-provider.wasm]
 principals:
   example-caller:
-    subjects: [slack.example.user]
+    subjects: [drn:slack:user:example:user]
 providerSettings:
   vm:
     baseUrl: https://vm-runner.vm-runner.svc.cluster.local:8443
