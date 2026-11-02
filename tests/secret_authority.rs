@@ -2,9 +2,8 @@
 use async_trait::async_trait;
 use dekopon_broker::{
     AuthenticatedContext, Broker, BrokerLimits, CapabilityRoute, ConstraintCatalog, ConstraintSet,
-    CredentialStore, IdentityDirectory, InMemoryAuditLog, InvocationRequest, PolicyEngine,
-    PolicyWorld, SecretCatalog, SecretMaterial, SecretResolutionError, SecretResolver,
-    SecretUseBinding,
+    IdentityDirectory, InMemoryAuditLog, InvocationRequest, PolicyEngine, PolicyWorld,
+    SecretCatalog, SecretMaterial, SecretResolutionError, SecretResolver, SecretUseBinding,
 };
 use dekopon_broker_host::{
     BrokerHostLimits, BrokerHostOptions, BrokerProviderRegistry, CommandRunOutcome,
@@ -18,7 +17,7 @@ use dekopon_core::{Actor, SecretDrn, SecretSinkKind};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::{Read, Write},
     net::TcpListener,
     os::{
@@ -31,7 +30,7 @@ use std::{
     time::Duration,
 };
 
-const SECRET: &str = "drn:com.xrl:secret:test:vm/token";
+const SECRET: &str = "drn:secret:vm/token";
 const TOKEN: &str = "broker-only-test-token";
 #[derive(Debug)]
 struct Resolver;
@@ -53,7 +52,7 @@ fn context() -> AuthenticatedContext {
             agent: "vm-test".parse().unwrap(),
         },
         "gateway".parse().unwrap(),
-        "slack.example.user".parse().unwrap(),
+        "drn:slack:user:example:user".parse().unwrap(),
     )
     .unwrap()
 }
@@ -129,7 +128,7 @@ async fn broker(
         .map(|c| SecretUseBinding {
             binding_id: c.id.to_string(),
             secret: SECRET.parse().unwrap(),
-            capability: c.id.clone(),
+            capabilities: BTreeSet::from([c.id.clone()]),
             sink: SecretSinkKind::HttpBearer,
             basic_username: None,
             allowed_hosts: vec![authority.into()],
@@ -153,7 +152,6 @@ async fn broker(
                 provider: "vm".parse().unwrap(),
                 effect: c.effect,
                 risk: c.risk,
-                credential: None,
                 default_secret_use: None,
                 constraints: ExecutionConstraints {
                     timeout_ms: 10000,
@@ -184,7 +182,6 @@ async fn broker(
         "broker".parse().unwrap(),
         PolicyEngine::new(&policy, &world).unwrap(),
         catalog,
-        CredentialStore::empty(),
         IdentityDirectory::empty(),
         Arc::new(InMemoryAuditLog::new(32).unwrap()),
         BrokerLimits::default(),
@@ -589,4 +586,30 @@ async fn a_wait_read_through_the_broker_sends_one_prefer_header_under_the_query_
     assert_eq!(wire.matches("authorization:").count(), 1);
     assert!(wire.contains(&format!("authorization: bearer {TOKEN}\r\n")));
     assert!(!wires[0].contains(SECRET));
+}
+#[tokio::test(flavor = "multi_thread")]
+async fn the_legacy_authority_realm_spelling_is_refused_in_the_guest_before_any_http() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let authority = listener.local_addr().unwrap().to_string();
+    let broker = broker(&authority, false, None).await;
+    let words = [
+        "--job",
+        "job-1",
+        "--secret",
+        "drn:com.xrl:secret:test:vm/token",
+    ]
+    .map(str::to_owned);
+    let refused = broker
+        .run_command(&context(), None, None, "ssh", &words, false)
+        .await
+        .unwrap();
+    let CommandRunOutcome::Failed { error } = refused else {
+        panic!("expected the fixed --secret refusal, got {refused:?}")
+    };
+    assert_eq!(
+        (error.code.as_str(), error.message.as_str()),
+        ("usage", "ssh: --secret requires one bare secret DRN\n")
+    );
+    assert!(matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
 }
