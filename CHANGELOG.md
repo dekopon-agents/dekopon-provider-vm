@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.7.0 — 2026-11-02
+
+- The vm provider ships a `vm` Agent Skill covering browse, record, job polling, artifact listing and asset send.
+- `ssh --job JOBID --wait SECONDS` (1–25) waits on the server for a job: `vm.job.get` gains an optional `waitSeconds`, sent as `Prefer: wait=<seconds>`.
+- `ssh --artifacts PROFILE` with no path lists the artifacts again instead of failing input validation.
+- `ssh --help` shows the provider's help, which names `--wait` and points at the jail's own `browse --help`.
+- Pin Dekopon SDK and broker crates to 0.75.0, with rustls-webpki 0.103.16 and Wasmtime 49.0.5.
+
 ## 0.6.0 — 2026-10-16
 
 - MP4 jail artifacts attach as SHA-256-verified video assets (8 MiB cap) without sending them to chat.
