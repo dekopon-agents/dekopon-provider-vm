@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.7.1 — 2026-11-02
+
+- `ssh --secret` takes `drn:secret:<path>` secret DRNs and refuses the legacy `drn:<authority>:secret:<realm>:<path>` spelling; `ssh --help` names the new spelling.
+- A schema-invalid capability input is refused with a field-level diagnostic (for example `invalid input: jobId: missing field`) instead of `the input does not match the capability's input schema`.
+- Pin Dekopon SDK and broker crates to 0.83.0.
+
 ## 0.7.0 — 2026-11-02
 
 - The vm provider ships a `vm` Agent Skill covering browse, record, job polling, artifact listing and asset send.
