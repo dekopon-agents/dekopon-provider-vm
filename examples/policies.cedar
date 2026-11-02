@@ -9,7 +9,7 @@ permit(
 permit(
     principal == Dekopon::Principal::"example-caller",
     action == Dekopon::Action::"secret.use",
-    resource == Dekopon::Secret::"drn:com.xrl:secret:prod:vm/token"
+    resource == Dekopon::Secret::"drn:secret:vm/token"
 ) when {
     context.provider == "vm" && context.sink == "httpBearer"
     && ["vm.exec", "vm.job.get", "vm.artifact.read"].contains(context.capability)

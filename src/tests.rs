@@ -1,7 +1,7 @@
 use super::*;
 use dekopon_provider_sdk::{CommandRunOutcome, SecretUseProposal};
 
-const SECRET: &str = "drn:com.xrl:secret:test:vm/token";
+const SECRET: &str = "drn:secret:vm/token";
 fn words(args: &[&str]) -> Vec<String> {
     args.iter().map(|s| (*s).into()).collect()
 }
@@ -816,4 +816,13 @@ fn the_help_names_wait_and_the_jails_own_browse_help() {
     assert!(command::HELP.contains("\nssh --job JOBID [--wait SECONDS] --secret DRN\n"));
     assert!(command::HELP.contains("\njail tools: `browse --help`"));
     assert!(command::USAGE.contains(" ssh --job JOBID [--wait SECONDS] --secret DRN\n"));
+}
+
+#[test]
+fn a_bare_drn_secret_path_is_proposed_as_the_bearer_secret() {
+    let (capability, _) = proposal(
+        &["--job", "job-1", "--secret", "drn:secret:vm/token"],
+        false,
+    );
+    assert_eq!(capability, "vm.job.get");
 }

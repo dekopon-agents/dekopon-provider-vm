@@ -6,7 +6,7 @@ use dekopon_provider_sdk_testkit::{Harness, HttpScript};
 use dekopon_vm_provider::Vm;
 use serde_json::{Value, json};
 
-const SECRET: &str = "drn:com.xrl:secret:test:vm/token";
+const SECRET: &str = "drn:secret:vm/token";
 
 fn component() -> std::path::PathBuf {
     std::env::var_os("DEKOPON_PROVIDER_COMPONENT")

@@ -7,7 +7,7 @@ use dekopon_vm_provider::Vm;
 use std::path::PathBuf;
 
 const SKILL: &str = include_str!("../skills/vm/SKILL.md");
-const DRN: &str = "drn:com.example:secret:test:vm/token";
+const DRN: &str = "drn:secret:vm/token";
 
 fn front_matter() -> Vec<(&'static str, &'static str)> {
     let rest = SKILL.strip_prefix("---\n").expect("front matter opens");

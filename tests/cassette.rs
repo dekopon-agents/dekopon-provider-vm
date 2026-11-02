@@ -6,7 +6,7 @@ use dekopon_provider_sdk_testkit::{HttpScript, Native};
 use dekopon_vm_provider::Vm;
 use serde_json::{Value, json};
 
-const SECRET: &str = "drn:com.xrl:secret:test:vm/token";
+const SECRET: &str = "drn:secret:vm/token";
 
 /// Replays one authored job cassette for `input` against the cluster and a prefixed base.
 fn replay(exchange: &Value, input: &Value) {
