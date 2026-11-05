@@ -33,8 +33,8 @@ Exec proposes `{profile,name,argv,stdinPiped?,stdinBudget?,deadlineMs}`; `stdinB
 provider. The broker requires both a Cedar `secret.use` grant and a private-map binding.
 `--secret` is mandatory; agent instructions must supply the public DRN.
 
-Owner `providerSettings.vm.baseUrl` is required (the Pi config sets it to
-`https://vm-runner.vm-runner.svc.cluster.local:8443`). Missing or malformed settings
+Owner `providerSettings.vm.baseUrl` is required (for example
+`https://vm-runner.example:8443`). Missing or malformed settings
 fail SDK validation before any VM effect. The required key remains `baseUrl`;
 there is no runtime default. It accepts HTTP(S), an optional path prefix, and one
 trailing slash, but no userinfo, query, fragment, whitespace, or empty host.
