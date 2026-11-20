@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.7.2 — 2026-11-20
+
+- The README uses deployment-neutral wording instead of naming a private deployment.
+
 ## 0.7.1 — 2026-11-02
 
 - `ssh --secret` takes `drn:secret:<path>` secret DRNs and refuses the legacy `drn:<authority>:secret:<realm>:<path>` spelling; `ssh --help` names the new spelling.
