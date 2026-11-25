@@ -1,26 +1,34 @@
 ---
 name: vm
-description: Use when a task needs a Firecracker jail through the ssh command, such as browsing a page, recording a page video, polling a long job or fetching an artifact to attach and send.
+description: Use when a task needs a Firecracker jail through ssh, including listing or closing hosts, browsing, recording, polling a job, or fetching an artifact.
 ---
 
 # vm: browse, record, poll, list and send
 
 `ssh` here is a command word, not an SSH transport. It runs one argv inside a jail and
-returns JSON. Your instructions name the jail profiles you may use and the secret DRN
-to pass; below, `PROFILE` and `DRN` stand for those. Never invent either one.
+returns JSON. Your instructions name the jail profiles you may start. The examples
+use the broker's default secret. If your instructions supply a public DRN to use
+explicitly, add `--secret DRN` to any form.
+
+## Find or close a host
+
+`ssh --list` shows your hosts and whether each is ready, pending, or down with a
+reason. If you reach your session quota, close a host you no longer need.
+`ssh --close` closes the default session. Use `ssh --close --session NAME` for
+another host. Once the command returns success, the pod is gone.
 
 ## 1. Open a page
 
 ```text
-ssh --secret DRN PROFILE -- browse --help
+ssh PROFILE -- browse --help
 ```
 
 `browse --help` is the authority on the jail's browser; read it first. The browser stays
 open for the life of the jail, so open a page once, then look at it:
 
 ```text
-ssh --secret DRN PROFILE -- browse open ADDRESS
-ssh --secret DRN PROFILE -- browse snapshot
+ssh PROFILE -- browse open ADDRESS
+ssh PROFILE -- browse snapshot
 ```
 
 `browse snapshot` prints the page's URL, title and accessibility tree. It also clicks,
@@ -32,7 +40,7 @@ arguments `browse` reads them from stdin, one per line.
 Open the page first; `browse record` films the current tab.
 
 ```text
-ssh --secret DRN PROFILE -- browse record NAME --seconds 10
+ssh PROFILE -- browse record NAME --seconds 10
 ```
 
 `NAME` is a flat name without `.mp4`. The recording lands in `/artifacts` as `NAME.mp4`,
@@ -47,7 +55,7 @@ The first response then carries `outcome` `unknown` and a `jobId`: the work may 
 running. Ask for the job instead of looping on `sleep`:
 
 ```text
-ssh --job ID --wait 20 --secret DRN
+ssh --job ID --wait 20
 ```
 
 `--wait` is 1-25 seconds (no default) and lets vm-runner hold a running job read until
@@ -62,8 +70,8 @@ Nothing retries on its own, and an exec is never re-run for you.
 ## 4. List, then read to attach
 
 ```text
-ssh --artifacts --secret DRN PROFILE
-ssh --artifacts --secret DRN PROFILE NAME.mp4
+ssh --artifacts PROFILE
+ssh --artifacts PROFILE NAME.mp4
 ```
 
 The first line lists: without PATH, `--artifacts` lists the session's artifacts. The

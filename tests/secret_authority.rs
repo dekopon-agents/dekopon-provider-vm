@@ -1,74 +1,21 @@
-//! Broker-wired real-component VM job read; no VM write or public endpoint.
-use async_trait::async_trait;
-use dekopon_broker::{
-    AuthenticatedContext, Broker, BrokerLimits, CapabilityRoute, ConstraintCatalog, ConstraintSet,
-    IdentityDirectory, InMemoryAuditLog, InvocationRequest, PolicyEngine, PolicyWorld,
-    SecretCatalog, SecretMaterial, SecretResolutionError, SecretResolver, SecretUseBinding,
-};
-use dekopon_broker_host::{
-    BrokerHostLimits, BrokerHostOptions, BrokerProviderRegistry, CommandRunOutcome,
-    asset::AssetInputs,
-};
-use dekopon_broker_protocol::{Streams, TraceParent};
-use dekopon_capability::{
-    AssetConstraints, ExecutionConstraints, HttpConstraints, HttpPathRule, InvocationOutcome,
-};
-use dekopon_core::{Actor, SecretDrn, SecretSinkKind};
+//! Broker-wired real-component VM secret and artifact checks.
+mod support;
+
+use dekopon_broker::{Broker, InMemoryAuditLog, InvocationRequest};
+use dekopon_broker_host::{CommandRunOutcome, asset::AssetInputs};
+use dekopon_broker_protocol::TraceParent;
+use dekopon_capability::InvocationOutcome;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet},
     io::{Read, Write},
     net::TcpListener,
-    os::{
-        fd::OwnedFd,
-        unix::{fs::FileExt, net::UnixStream},
-    },
-    path::PathBuf,
-    sync::Arc,
+    os::unix::fs::FileExt,
     thread,
     time::Duration,
 };
+use support::{SECRET, TOKEN, context, serve, streams};
 
-const SECRET: &str = "drn:secret:vm/token";
-const TOKEN: &str = "broker-only-test-token";
-#[derive(Debug)]
-struct Resolver;
-#[async_trait]
-impl SecretResolver for Resolver {
-    async fn resolve(&self, _: &SecretDrn) -> Result<SecretMaterial, SecretResolutionError> {
-        Ok(SecretMaterial::new(TOKEN.as_bytes().to_vec()))
-    }
-}
-fn component() -> PathBuf {
-    std::env::var_os("DEKOPON_PROVIDER_COMPONENT")
-        .expect("built component")
-        .into()
-}
-fn context() -> AuthenticatedContext {
-    AuthenticatedContext::attested(
-        "caller".parse().unwrap(),
-        Actor::Agent {
-            agent: "vm-test".parse().unwrap(),
-        },
-        "gateway".parse().unwrap(),
-        "drn:slack:user:example:user".parse().unwrap(),
-    )
-    .unwrap()
-}
-fn streams() -> (AssetInputs, UnixStream) {
-    let (stdout, peer) = UnixStream::pair().unwrap();
-    (
-        AssetInputs {
-            streams: Some(Streams {
-                stdin: None,
-                stdout: OwnedFd::from(stdout),
-            }),
-            ..AssetInputs::default()
-        },
-        peer,
-    )
-}
 async fn broker(
     authority: &str,
     deny: bool,
@@ -79,117 +26,9 @@ async fn broker(
     } else {
         ""
     };
-    let mut registry = BrokerProviderRegistry::load_with_options(
-        [component()],
-        BrokerHostLimits {
-            max_http_response_bytes: 9 * 1024 * 1024,
-            ..BrokerHostLimits::default()
-        },
-        None,
-        &BrokerHostOptions {
-            provider_settings: Arc::new(BTreeMap::from([(
-                "vm".parse().unwrap(),
-                json!({"baseUrl":format!("http://{authority}{prefix}/")}).to_string(),
-            )])),
-            ..BrokerHostOptions::default()
-        },
-    )
-    .await
-    .unwrap();
-    if let Some(root) = asset_root {
-        registry.set_assets(dekopon_http_host::asset::AssetDirectory::new(
-            root.to_owned(),
-            20 * 1024 * 1024,
-        ));
-    }
-    let capabilities = registry.manifests().next().unwrap().capabilities.clone();
-    let world = PolicyWorld::new(
-        ["caller".parse().unwrap()],
-        capabilities
-            .iter()
-            .map(|c| (c.id.clone(), "vm".parse().unwrap())),
-    )
-    .unwrap()
-    .with_secrets([SECRET.parse().unwrap()]);
-    let policy = format!(
-        r#"
-        @id("invoke") permit(principal == Dekopon::Principal::"caller", action, resource == Dekopon::Provider::"vm");
-        @id("secret") permit(principal == Dekopon::Principal::"caller", action == Dekopon::Action::"secret.use", resource == Dekopon::Secret::"{SECRET}") when {{ context.provider == "vm" && context.sink == "httpBearer" }};
-        {}
-    "#,
-        if deny {
-            r#"@id("deny-token") forbid(principal, action == Dekopon::Action::"secret.use", resource);"#
-        } else {
-            ""
-        }
-    );
-    let bindings = capabilities
-        .iter()
-        .map(|c| SecretUseBinding {
-            binding_id: c.id.to_string(),
-            secret: SECRET.parse().unwrap(),
-            capabilities: BTreeSet::from([c.id.clone()]),
-            sink: SecretSinkKind::HttpBearer,
-            basic_username: None,
-            allowed_hosts: vec![authority.into()],
-            allowed_methods: vec!["GET".into(), "POST".into()],
-            allowed_paths: ["/v1/sessions", "/v1/jobs"]
-                .into_iter()
-                .map(|p| HttpPathRule::SegmentPrefix {
-                    path: format!("{prefix}{p}"),
-                })
-                .collect(),
-            allow_query: false,
-            max_injections: 2,
-        })
-        .collect();
-    let catalog = ConstraintCatalog::new(capabilities.into_iter().map(|c| {
-        let artifact = c.id.as_str() == "vm.artifact.read";
-        (
-            c.id,
-            ConstraintSet {
-                route: CapabilityRoute::Generic,
-                provider: "vm".parse().unwrap(),
-                effect: c.effect,
-                risk: c.risk,
-                default_secret_use: None,
-                constraints: ExecutionConstraints {
-                    timeout_ms: 10000,
-                    http: Some(HttpConstraints {
-                        allowed_hosts: vec![authority.into()],
-                        allowed_methods: vec!["GET".into(), "POST".into()],
-                        max_requests: 2,
-                        max_request_bytes: 200000,
-                        max_response_bytes: if artifact { 9 * 1024 * 1024 } else { 1048576 },
-                        allow_plaintext_loopback: true,
-                        propagate_trace: false,
-                        request_templates: Vec::new(),
-                        signed_download: None,
-                    }),
-                    asset: artifact.then_some(AssetConstraints {
-                        attach: true,
-                        remove: false,
-                        send: false,
-                    }),
-                    ..ExecutionConstraints::default()
-                },
-            },
-        )
-    }))
-    .unwrap();
-    Broker::new(
-        registry,
-        "broker".parse().unwrap(),
-        PolicyEngine::new(&policy, &world).unwrap(),
-        catalog,
-        IdentityDirectory::empty(),
-        Arc::new(InMemoryAuditLog::new(32).unwrap()),
-        BrokerLimits::default(),
-    )
-    .unwrap()
-    .with_secret_catalog(SecretCatalog::new(bindings, Arc::new(Resolver)).unwrap())
-    .unwrap()
+    support::broker(authority, prefix, deny, asset_root, false).await
 }
+
 fn request(
     id: &str,
     input: Value,
@@ -311,51 +150,6 @@ async fn cedar_denies_before_http_and_permitted_job_get_injects_exactly_one_bear
     assert!(!wire.contains(SECRET));
 }
 
-/// Answers one loopback connection per response, in order; returns each request's head.
-fn serve(listener: TcpListener, responses: Vec<Vec<u8>>) -> thread::JoinHandle<Vec<String>> {
-    thread::spawn(move || {
-        let mut paths = Vec::new();
-        for response in responses {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut request = Vec::new();
-            while !request.windows(4).any(|part| part == b"\r\n\r\n") {
-                let mut buf = [0; 4096];
-                let n = stream.read(&mut buf).unwrap();
-                assert_ne!(n, 0);
-                request.extend_from_slice(&buf[..n]);
-                assert!(request.len() < 32768);
-            }
-            let header_end = request
-                .windows(4)
-                .position(|part| part == b"\r\n\r\n")
-                .unwrap()
-                + 4;
-            let headers = String::from_utf8(request[..header_end].to_vec()).unwrap();
-            let length = headers
-                .lines()
-                .find_map(|line| {
-                    line.to_ascii_lowercase()
-                        .strip_prefix("content-length: ")
-                        .and_then(|n| n.parse::<usize>().ok())
-                })
-                .unwrap_or(0);
-            while request.len() - header_end < length {
-                let mut buf = [0; 4096];
-                let n = stream.read(&mut buf).unwrap();
-                assert_ne!(n, 0);
-                request.extend_from_slice(&buf[..n]);
-            }
-            paths.push(headers);
-            for chunk in response.chunks(65_536) {
-                stream.write_all(chunk).unwrap();
-            }
-        }
-        paths
-    })
-}
 #[tokio::test(flavor = "multi_thread")]
 async fn component_attaches_complete_mp4_without_a_send_grant() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

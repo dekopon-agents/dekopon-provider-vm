@@ -4,9 +4,11 @@ Dekopon 0.22+ Wasm provider for vm-runner Firecracker jails. `ssh` is a command 
 not an SSH transport. The broker owns HTTP, credentials and authorization.
 
 ```text
-ssh [--session NAME] --secret DRN [--timeout SECONDS] PROFILE -- ARGV...
-ssh --job JOBID [--wait SECONDS] --secret DRN
-ssh --artifacts [--session NAME] --secret DRN PROFILE [PATH]
+ssh [--session NAME] [--secret DRN] [--timeout SECONDS] PROFILE -- ARGV...
+ssh --job JOBID [--wait SECONDS] [--secret DRN]
+ssh --artifacts [--session NAME] [--secret DRN] PROFILE [PATH]
+ssh --list [--secret DRN]
+ssh --close [--session NAME] [--secret DRN]
 ssh -h|--help
 ```
 
@@ -14,8 +16,11 @@ Session defaults to `default`; timeout is 1–25 seconds, default 25. `--wait` i
 1–25 seconds with no default: vm-runner holds a running job read until the job
 finishes or the wait ends, so polling needs no `sleep` loop; an older vm-runner
 ignores it and answers at once. Without PATH, `--artifacts` lists the session's
-artifacts. The jail's own tools document themselves: `browse --help`, run as
-`ssh --secret DRN PROFILE -- browse --help`. NAME and PROFILE
+artifacts. `--list` prints the caller's hosts as JSON with name, profile, state
+(`pending`, `ready`, or `down`) and any down reason. It reports existing sessions.
+`--close` returns `{"name":"default","state":"closed"}` for the default session once
+vm-runner confirms its pod is gone. Use `--session NAME` to close another host.
+Run `ssh PROFILE -- browse --help` for the jail's browser commands. NAME and PROFILE
 match `^[a-z0-9][a-z0-9-]{0,62}$`. Arguments after `--` are literal argv, not a shell
 script; stdin passes through to exec. At most 70 argv entries and 24,576 aggregate
 UTF-8 bytes across argv and stdin. Malformed forms render fixed stderr at exit 2;
@@ -26,12 +31,17 @@ help renders stdout at exit 0. Options take separate values, at most once.
 | `vm.exec` | ExternalWrite / High | create-or-get session, then exec |
 | `vm.job.get` | ReadOnly / Low | get job |
 | `vm.artifact.read` | ExternalWrite / Low | create-or-get session, then list/read; `.png`/`.jpg`/`.jpeg`/`.mp4` reads attach |
+| `vm.session.list` | ReadOnly / Low | list sessions |
+| `vm.session.close` | ExternalWrite / Low | list sessions, then delete the named session by ID |
 
 Exec proposes `{profile,name,argv,stdinPiped?,stdinBudget?,deadlineMs}`; `stdinBudget` is set only for a piped argv proposal to preserve the 24,576-byte combined argv-and-stdin cap without carrying pipe bytes. The bounded UTF-8 stdin is read only during authorized invoke, before session creation. Jobs `{jobId,waitSeconds?}`, where `waitSeconds` (1–25) is sent as the request header `Prefer: wait=<seconds>` (RFC 7240), never a query; artifacts
-`{profile,name,path?}`. Schemas are closed. Secret DRNs travel only beside input as
+`{profile,name,path?}`. Session list takes `{}` and close takes `{name}`.
+Schemas are closed. Secret DRNs travel only beside input as
 `secretUse.httpBearer`: neither token nor Authorization header is available to the
 provider. The broker requires both a Cedar `secret.use` grant and a private-map binding.
-`--secret` is mandatory; agent instructions must supply the public DRN.
+Omit `--secret` when the broker supplies `defaultSecretUse`. The broker can select
+the agent's binding through `agents.<agent>.secrets`. To select a secret explicitly,
+pass its authorized public DRN with `--secret`.
 
 Owner `providerSettings.vm.baseUrl` is required (for example
 `https://vm-runner.example:8443`). Missing or malformed settings
@@ -66,7 +76,10 @@ The capability then also needs the asset grant and an HTTP
 `maxResponseBytes` above 8 MiB. Lists return server JSON unchanged.
 Other statuses produce fixed `vm-unauthorized`, `vm-conflict`, `vm-quota`,
 `vm-bad-request`, `vm-unavailable` or `vm-failed` errors. Transport failures use the
-broker HTTP error codes. All returned content is untrusted.
+broker HTTP error codes. A quota refusal with counts tells the caller how many
+sessions are in use and to close another host. Close refusals use
+`vm-unknown-session`, `vm-session-delete-failed`, or `vm-session-delete-timeout`.
+All returned content is untrusted.
 
 See `examples/broker.yaml` and `examples/policies.cedar` for broker configuration.
 The port must appear in allowedHosts: a bare hostname grants HTTPS port 443, not 8443.
@@ -88,6 +101,7 @@ cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo clippy --locked --package dekopon-vm-provider --target wasm32-unknown-unknown --lib -- -D warnings
 cargo deny --all-features check bans licenses sources advisories
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 ../provider-workflows/build.sh
 DEKOPON_PROVIDER_COMPONENT=$PWD/vm-provider.wasm cargo test --locked --workspace
 ```

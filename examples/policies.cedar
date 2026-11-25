@@ -5,6 +5,20 @@ permit(
     resource == Dekopon::Provider::"vm"
 ) when { context has agent && context.agent == "example-agent" };
 
+@id("example-vm-session-list")
+permit(
+    principal == Dekopon::Principal::"example-caller",
+    action == Dekopon::Action::"vm.session.list",
+    resource == Dekopon::Provider::"vm"
+) when { context has agent && context.agent == "example-agent" };
+
+@id("example-vm-session-close")
+permit(
+    principal == Dekopon::Principal::"example-caller",
+    action == Dekopon::Action::"vm.session.close",
+    resource == Dekopon::Provider::"vm"
+) when { context has agent && context.agent == "example-agent" };
+
 @id("example-vm-token")
 permit(
     principal == Dekopon::Principal::"example-caller",
@@ -12,5 +26,5 @@ permit(
     resource == Dekopon::Secret::"drn:secret:vm/token"
 ) when {
     context.provider == "vm" && context.sink == "httpBearer"
-    && ["vm.exec", "vm.job.get", "vm.artifact.read"].contains(context.capability)
+    && ["vm.exec", "vm.job.get", "vm.artifact.read", "vm.session.list", "vm.session.close"].contains(context.capability)
 };
