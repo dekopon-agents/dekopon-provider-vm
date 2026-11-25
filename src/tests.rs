@@ -995,6 +995,106 @@ fn native_close_resolves_the_name_and_only_accepts_204() {
 }
 
 #[test]
+fn native_close_targets_the_live_row_over_a_terminating_namesake() {
+    let origin = format!("{DEFAULT_BASE}/runner/api");
+    let base = Base::parse(&origin).unwrap();
+    for live_state in ["ready", "pending"] {
+        let mut requests = Vec::new();
+        let closed = invoke_with(
+            "vm.session.close",
+            json!({"name":"default"}),
+            &base,
+            |request: Request| {
+                requests.push(request);
+                Ok(if requests.len() == 1 {
+                    response(
+                        200,
+                        json!([
+                            {"sessionId":"session-1","name":"default","profile":"travel","state":"down","reason":"idle"},
+                            {"sessionId":"session-2","name":"default","profile":"travel","state":live_state}
+                        ]),
+                    )
+                } else {
+                    response(204, Value::Null)
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(closed, json!({"name":"default","state":"closed"}));
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method, "GET");
+        assert_eq!(requests[0].uri, format!("{origin}/v1/sessions"));
+        assert_eq!(requests[1].method, "DELETE");
+        assert_eq!(requests[1].uri, format!("{origin}/v1/sessions/session-2"));
+    }
+}
+
+#[test]
+fn close_selection_requires_one_row_in_the_preferred_state() {
+    let reservations = |states: &[&str]| {
+        states
+            .iter()
+            .enumerate()
+            .map(|(index, state)| {
+                json!({"sessionId":format!("session-{index}"),"name":"default","profile":"travel","state":state})
+            })
+            .collect::<Vec<_>>()
+    };
+    for (states, expected) in [
+        (&["down"][..], Ok("session-0")),
+        (&["down", "down"], Err("invalid-response")),
+        (&["down", "ready", "pending"], Err("invalid-response")),
+        (&["draining"], Err("invalid-response")),
+    ] {
+        let sessions = list_sessions(response(200, json!(reservations(states)))).unwrap();
+        assert_eq!(
+            close_session_id(&sessions, "default").map_err(|error| error.code().as_str()),
+            expected
+        );
+    }
+}
+
+#[test]
+fn native_session_verbs_tolerate_unknown_state_and_reason_strings() {
+    let base = Base::parse(DEFAULT_BASE).unwrap();
+    let sessions = json!([
+        {"sessionId":"session-1","name":"default","profile":"travel","state":"ready"},
+        {"sessionId":"session-2","name":"future","profile":"travel","state":"draining"},
+        {"sessionId":"session-3","name":"old","profile":"travel","state":"down","reason":"future_reason"}
+    ]);
+    let listed = invoke_with("vm.session.list", json!({}), &base, |request: Request| {
+        assert_eq!(request.method, "GET");
+        Ok(response(200, sessions.clone()))
+    })
+    .unwrap();
+    assert_eq!(
+        listed,
+        json!([
+            {"name":"default","profile":"travel","state":"ready"},
+            {"name":"future","profile":"travel","state":"unknown"},
+            {"name":"old","profile":"travel","state":"down","reason":"unknown"}
+        ])
+    );
+
+    let closed = invoke_with(
+        "vm.session.close",
+        json!({"name":"default"}),
+        &base,
+        |request: Request| {
+            if request.method == "GET" {
+                Ok(response(200, sessions.clone()))
+            } else {
+                assert_eq!(request.method, "DELETE");
+                assert_eq!(request.uri, format!("{DEFAULT_BASE}/v1/sessions/session-1"));
+                Ok(response(204, Value::Null))
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(closed, json!({"name":"default","state":"closed"}));
+}
+
+#[test]
 fn native_close_never_deletes_for_a_missing_name_or_unsafe_id() {
     let base = Base::parse(DEFAULT_BASE).unwrap();
     for (name, id, expected) in [

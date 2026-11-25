@@ -75,6 +75,7 @@ async fn cedar_denies_before_http_and_permitted_job_get_injects_exactly_one_bear
     assert_eq!(result.result.outcome, InvocationOutcome::Denied);
     assert_eq!(result.result.error.as_deref(), Some("secret-denied"));
     assert!(matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
+    let permitted = broker(&authority, false, None).await;
     let server = thread::spawn(move || {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut stream = loop {
@@ -111,7 +112,6 @@ async fn cedar_denies_before_http_and_permitted_job_get_injects_exactly_one_bear
         stream.write_all(body).unwrap();
         String::from_utf8(request).unwrap()
     });
-    let permitted = broker(&authority, false, None).await;
     let (assets, mut stdout) = streams();
     let result = permitted
         .invoke(

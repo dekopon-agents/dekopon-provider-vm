@@ -460,6 +460,8 @@ enum SessionState {
     Pending,
     Ready,
     Down,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -471,6 +473,8 @@ enum SessionEndReason {
     Duplicate,
     Terminal,
     Closed,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Deserialize)]
@@ -619,12 +623,8 @@ fn invoke_with<T: Transport>(
         }
         Input::Close(v) => {
             let sessions = list_sessions(call(method::GET, "/v1/sessions", None, None)?)?;
-            let mut matches = sessions.iter().filter(|session| session.name == v.name);
-            let session = matches.next().ok_or_else(|| error("vm-unknown-session"))?;
-            if matches.next().is_some() || !command::job_id(&session.session_id) {
-                return Err(error("invalid-response"));
-            }
-            let path = format!("/v1/sessions/{}", encode(&session.session_id));
+            let id = close_session_id(&sessions, &v.name)?;
+            let path = format!("/v1/sessions/{}", encode(id));
             let response = call(method::DELETE, &path, None, None)?;
             return match response.status {
                 204 => Ok(json!({"name": v.name, "state": "closed"})),
@@ -691,6 +691,38 @@ fn list_sessions(response: Response) -> Result<Vec<ListedSession>, VmError> {
         return Err(status_error(&response));
     }
     serde_json::from_slice(&response.body).map_err(|_| error("invalid-response"))
+}
+
+fn close_session_id<'a>(sessions: &'a [ListedSession], name: &str) -> Result<&'a str, VmError> {
+    let mut named = sessions
+        .iter()
+        .filter(|session| session.name == name)
+        .peekable();
+    if named.peek().is_none() {
+        return Err(error("vm-unknown-session"));
+    }
+
+    let mut active = None;
+    let mut down = None;
+    let mut multiple_down = false;
+    // A terminating reservation can still be listed after the runner reuses its name.
+    for session in named {
+        match session.state {
+            SessionState::Pending | SessionState::Ready => {
+                if active.replace(session).is_some() {
+                    return Err(error("invalid-response"));
+                }
+            }
+            SessionState::Down => multiple_down |= down.replace(session).is_some(),
+            SessionState::Unknown => {}
+        }
+    }
+
+    active
+        .or(down.filter(|_| !multiple_down))
+        .map(|session| session.session_id.as_str())
+        .filter(|id| command::job_id(id))
+        .ok_or_else(|| error("invalid-response"))
 }
 
 fn close_refusal(response: &Response) -> VmError {
