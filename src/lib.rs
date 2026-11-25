@@ -41,6 +41,10 @@ pub struct Exec;
 pub struct Job;
 /// Lists or reads an artifact.
 pub struct Artifact;
+/// Lists the caller's sessions.
+pub struct SessionList;
+/// Closes one named session.
+pub struct SessionClose;
 
 /// The ssh argv grammar.
 pub struct VmArgs {
@@ -80,7 +84,12 @@ impl clap::FromArgMatches for VmArgs {
                 index += 2;
                 continue;
             }
-            if word.starts_with('-') && !matches!(word.as_str(), "--artifacts" | "-h" | "--help") {
+            if word.starts_with('-')
+                && !matches!(
+                    word.as_str(),
+                    "--artifacts" | "--list" | "--close" | "-h" | "--help"
+                )
+            {
                 return Err(clap::Error::raw(
                     clap::error::ErrorKind::UnknownArgument,
                     "unsupported ssh option",
@@ -109,19 +118,48 @@ impl clap::Parser for VmArgs {}
 #[derive(Debug)]
 /// Stable credential-free VM failure.
 #[derive(Clone)]
-pub struct VmError(&'static str);
+pub struct VmError(VmFailure);
+
+#[derive(Debug, Clone)]
+enum VmFailure {
+    Fixed(&'static str),
+    Quota {
+        sessions_in_use: u64,
+        max_sessions: u32,
+    },
+}
+
 impl fmt::Display for VmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.0)
+        match self.0 {
+            VmFailure::Fixed(code) => f.write_str(code),
+            VmFailure::Quota {
+                sessions_in_use,
+                max_sessions,
+            } => {
+                let noun = if max_sessions == 1 {
+                    "instance"
+                } else {
+                    "instances"
+                };
+                write!(
+                    f,
+                    "could not reach host: you're at {sessions_in_use} of {max_sessions} running {noun} allowed. close another session to use another host"
+                )
+            }
+        }
     }
 }
 impl Failure for VmError {
     fn code(&self) -> Code {
-        Code::new(self.0)
+        Code::new(match self.0 {
+            VmFailure::Fixed(code) => code,
+            VmFailure::Quota { .. } => "vm-quota",
+        })
     }
 }
 fn error(code: &'static str) -> VmError {
-    VmError(code)
+    VmError(VmFailure::Fixed(code))
 }
 
 #[derive(Clone, Copy)]
@@ -129,6 +167,8 @@ enum Operation {
     Exec,
     Job,
     Artifact,
+    List,
+    Close,
 }
 
 impl Operation {
@@ -137,6 +177,8 @@ impl Operation {
             Self::Exec => "vm.exec",
             Self::Job => "vm.job.get",
             Self::Artifact => "vm.artifact.read",
+            Self::List => "vm.session.list",
+            Self::Close => "vm.session.close",
         }
     }
 
@@ -145,6 +187,8 @@ impl Operation {
             "vm.exec" | "exec" => Ok(Self::Exec),
             "vm.job.get" | "job.get" => Ok(Self::Job),
             "vm.artifact.read" | "artifact.read" => Ok(Self::Artifact),
+            "vm.session.list" | "session.list" => Ok(Self::List),
+            "vm.session.close" | "session.close" => Ok(Self::Close),
             _ => Err(error("unsupported-capability")),
         }
     }
@@ -155,7 +199,7 @@ impl Provider for Vm {
     const COMMAND_WORDS: &'static [&'static str] = &["ssh"];
     const DESCRIPTION: &'static str = "Runs commands and reads results in vm-runner jails.";
     type Args = VmArgs;
-    type Capabilities = (Exec, Job, Artifact);
+    type Capabilities = (Exec, Job, Artifact, SessionList, SessionClose);
     fn propose(args: VmArgs, stdin_piped: bool) -> Result<Proposal<Self>, Usage> {
         command::propose(&args.words, stdin_piped)
     }
@@ -227,6 +271,23 @@ impl Capability for Artifact {
         )
     }
 }
+
+capability!(
+    SessionList,
+    "session.list",
+    "List the caller's jail sessions.",
+    EffectKind::ReadOnly,
+    RiskLevel::Low,
+    ListInput
+);
+capability!(
+    SessionClose,
+    "session.close",
+    "Close a named jail session and wait for its pod to go away.",
+    EffectKind::ExternalWrite,
+    RiskLevel::Low,
+    CloseInput
+);
 
 trait Transport {
     type Handle;
@@ -368,10 +429,73 @@ pub struct JobInput {
     pub(crate) wait_seconds: Option<u32>,
 }
 
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+/// Closed session-list input.
+pub struct ListInput {}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+/// Closed session-close input.
+pub struct CloseInput {
+    #[schemars(regex(pattern = "^[a-z0-9][a-z0-9-]{0,62}$"))]
+    pub(crate) name: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ListedSession {
+    #[serde(skip_serializing)]
+    session_id: String,
+    name: String,
+    profile: String,
+    state: SessionState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<SessionEndReason>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SessionState {
+    Pending,
+    Ready,
+    Down,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SessionEndReason {
+    Idle,
+    MaxSeconds,
+    BootFailure,
+    Duplicate,
+    Terminal,
+    Closed,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Deserialize)]
+struct CloseRefusal {
+    error: CloseCode,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CloseCode {
+    UnknownSession,
+    SessionDeleteFailed,
+    SessionDeleteTimeout,
+}
+
 enum Input {
     Exec(ExecInput),
     Job(JobInput),
     Artifact(ArtifactInput),
+    List,
+    Close(CloseInput),
 }
 
 fn input(op: Operation, value: Value) -> Result<Input, VmError> {
@@ -413,6 +537,17 @@ fn input(op: Operation, value: Value) -> Result<Input, VmError> {
                 return Err(invalid());
             }
             Ok(Input::Artifact(v))
+        }
+        Operation::List => {
+            let _: ListInput = serde_json::from_value(value).map_err(|_| invalid())?;
+            Ok(Input::List)
+        }
+        Operation::Close => {
+            let v: CloseInput = serde_json::from_value(value).map_err(|_| invalid())?;
+            if !command::name(&v.name) {
+                return Err(invalid());
+            }
+            Ok(Input::Close(v))
         }
     }
 }
@@ -482,6 +617,21 @@ fn invoke_with<T: Transport>(
         }
         Input::Exec(v) => (&v.profile, &v.name),
         Input::Artifact(v) => (&v.profile, &v.name),
+        Input::List => {
+            let sessions = list_sessions(call(method::GET, "/v1/sessions", None, None)?)?;
+            return serde_json::to_value(sessions).map_err(|_| error("invalid-response"));
+        }
+        Input::Close(v) => {
+            let sessions = list_sessions(call(method::GET, "/v1/sessions", None, None)?)?;
+            let id = close_session_id(&sessions, &v.name)?;
+            let path = format!("/v1/sessions/{}", encode(id));
+            let response = call(method::DELETE, &path, None, None)?;
+            return match response.status {
+                204 => Ok(json!({"name": v.name, "state": "closed"})),
+                404 | 502 | 504 => Err(close_refusal(&response)),
+                _ => Err(status_error(&response)),
+            };
+        }
     };
     let session = json_response(
         call(
@@ -530,8 +680,61 @@ fn invoke_with<T: Transport>(
                 artifact(response, &path)
             }
         },
-        Input::Job(_) => unreachable!("job returned before session creation"),
+        Input::Job(_) | Input::List | Input::Close(_) => {
+            unreachable!("operation returned before session creation")
+        }
     }
+}
+
+fn list_sessions(response: Response) -> Result<Vec<ListedSession>, VmError> {
+    if response.status != 200 {
+        return Err(status_error(&response));
+    }
+    serde_json::from_slice(&response.body).map_err(|_| error("invalid-response"))
+}
+
+fn close_session_id<'a>(sessions: &'a [ListedSession], name: &str) -> Result<&'a str, VmError> {
+    let mut named = sessions
+        .iter()
+        .filter(|session| session.name == name)
+        .peekable();
+    if named.peek().is_none() {
+        return Err(error("vm-unknown-session"));
+    }
+
+    let mut active = None;
+    let mut down = None;
+    let mut multiple_down = false;
+    // A terminating reservation can still be listed after the runner reuses its name.
+    for session in named {
+        match session.state {
+            SessionState::Pending | SessionState::Ready => {
+                if active.replace(session).is_some() {
+                    return Err(error("invalid-response"));
+                }
+            }
+            SessionState::Down => multiple_down |= down.replace(session).is_some(),
+            SessionState::Unknown => {}
+        }
+    }
+
+    active
+        .or(down.filter(|_| !multiple_down))
+        .map(|session| session.session_id.as_str())
+        .filter(|id| command::job_id(id))
+        .ok_or_else(|| error("invalid-response"))
+}
+
+fn close_refusal(response: &Response) -> VmError {
+    let Ok(refusal) = serde_json::from_slice::<CloseRefusal>(&response.body) else {
+        return error("invalid-response");
+    };
+    error(match (response.status, refusal.error) {
+        (404, CloseCode::UnknownSession) => "vm-unknown-session",
+        (502, CloseCode::SessionDeleteFailed) => "vm-session-delete-failed",
+        (504, CloseCode::SessionDeleteTimeout) => "vm-session-delete-timeout",
+        _ => "invalid-response",
+    })
 }
 
 fn encode(value: &str) -> String {
@@ -555,16 +758,28 @@ fn status_error(response: &Response) -> VmError {
 }
 
 fn status_code(status: u16, body: &[u8]) -> VmError {
+    if status == 400
+        && let Ok(body) = serde_json::from_slice::<Value>(body)
+        && body["reason"] == "quota"
+    {
+        let sessions_in_use = body["sessionsInUse"].as_u64();
+        let max_sessions = body["maxSessions"].as_u64().and_then(|n| n.try_into().ok());
+        if let (true, Some(sessions_in_use), Some(max_sessions)) = (
+            body["outcome"] == "not_executed",
+            sessions_in_use,
+            max_sessions,
+        ) {
+            return VmError(VmFailure::Quota {
+                sessions_in_use,
+                max_sessions,
+            });
+        }
+        return error("vm-quota");
+    }
     error(match status {
         401 | 403 => "vm-unauthorized",
         409 => "vm-conflict",
         429 => "vm-quota",
-        400 if serde_json::from_slice::<Value>(body)
-            .ok()
-            .is_some_and(|v| v["reason"] == "quota") =>
-        {
-            "vm-quota"
-        }
         400 | 404 | 413 | 416 | 422 => "vm-bad-request",
         503 | 504 => "vm-unavailable",
         _ => "vm-failed",

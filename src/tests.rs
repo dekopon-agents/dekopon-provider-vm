@@ -44,6 +44,12 @@ fn manifest_preserves_identity_effects_and_closed_schemas() {
                 EffectKind::ExternalWrite,
                 RiskLevel::Low
             ),
+            ("vm.session.list", EffectKind::ReadOnly, RiskLevel::Low),
+            (
+                "vm.session.close",
+                EffectKind::ExternalWrite,
+                RiskLevel::Low
+            ),
         ]
     );
     assert!(
@@ -696,15 +702,17 @@ fn other_artifact_paths_keep_the_ranged_text_or_metadata_read() {
 #[test]
 fn model_origin_controls_are_absent_and_rejected() {
     for capability in provider::manifest::<Vm>().unwrap().capabilities {
-        let properties = capability.input_schema["properties"].as_object().unwrap();
+        let properties = capability.input_schema["properties"].as_object();
         for key in ["baseUrl", "base_url", "endpoint", "url", "apiUrl"] {
-            assert!(!properties.contains_key(key));
+            assert!(properties.is_none_or(|properties| !properties.contains_key(key)));
             let mut value = match capability.id.as_str() {
                 "vm.exec" => {
                     json!({"profile":"test","name":"default","argv":["pwd"],"deadlineMs":25000})
                 }
                 "vm.job.get" => json!({"jobId":"job-1"}),
                 "vm.artifact.read" => json!({"profile":"test","name":"default","path":"shot.png"}),
+                "vm.session.list" => json!({}),
+                "vm.session.close" => json!({"name":"default"}),
                 _ => unreachable!(),
             };
             value[key] = json!("https://other.example.test");
@@ -813,9 +821,9 @@ fn the_help_names_wait_and_the_jails_own_browse_help() {
         };
         assert_eq!((stdout.as_str(), stderr.as_str()), (command::HELP, ""));
     }
-    assert!(command::HELP.contains("\nssh --job JOBID [--wait SECONDS] --secret DRN\n"));
+    assert!(command::HELP.contains("\nssh --job JOBID [--wait SECONDS] [--secret DRN]\n"));
     assert!(command::HELP.contains("\njail tools: `browse --help`"));
-    assert!(command::USAGE.contains(" ssh --job JOBID [--wait SECONDS] --secret DRN\n"));
+    assert!(command::USAGE.contains(" ssh --job JOBID [--wait SECONDS] [--secret DRN]\n"));
 }
 
 #[test]
@@ -825,4 +833,309 @@ fn a_bare_drn_secret_path_is_proposed_as_the_bearer_secret() {
         false,
     );
     assert_eq!(capability, "vm.job.get");
+}
+
+#[test]
+fn omitted_secret_leaves_each_command_proposal_unbound() {
+    for (args, expected_capability, expected_input) in [
+        (
+            &["travel", "--", "pwd"][..],
+            "vm.exec",
+            json!({"name":"default","profile":"travel","argv":["pwd"],"deadlineMs":25000}),
+        ),
+        (&["--job", "job-1"], "vm.job.get", json!({"jobId":"job-1"})),
+        (
+            &["--artifacts", "travel"],
+            "vm.artifact.read",
+            json!({"name":"default","profile":"travel"}),
+        ),
+        (&["--list"], "vm.session.list", json!({})),
+        (&["--close"], "vm.session.close", json!({"name":"default"})),
+        (
+            &["--close", "--session", "work"],
+            "vm.session.close",
+            json!({"name":"work"}),
+        ),
+    ] {
+        let CommandRunOutcome::Proposed {
+            capability,
+            input,
+            secret_use,
+        } = command(args, false)
+        else {
+            panic!("expected proposal for {args:?}");
+        };
+        assert_eq!(capability.as_str(), expected_capability);
+        assert_eq!(input, expected_input);
+        assert_eq!(secret_use, None);
+    }
+    for (flag, capability, input) in [
+        ("--list", "vm.session.list", json!({})),
+        ("--close", "vm.session.close", json!({"name":"default"})),
+    ] {
+        assert_eq!(
+            proposal(&[flag, "--secret", SECRET], false),
+            (capability.into(), input)
+        );
+    }
+}
+
+#[test]
+fn malformed_session_commands_return_the_exit_two_usage_failure() {
+    for argv in [
+        &["--list", "--session", "default"][..],
+        &["--list", "--list"],
+        &["--close", "--close"],
+        &["--close", "--list"],
+        &["--job", "job-1", "--close"],
+        &["--artifacts", "travel", "--list"],
+        &["--list", "travel"],
+        &["--close", "--", "pwd"],
+        &["--close", "--timeout", "5"],
+        &["--close", "--wait", "5"],
+        &["--close", "--session"],
+        &["--close", "--session", "../other"],
+    ] {
+        let CommandRunOutcome::Failed { error } = command(argv, false) else {
+            panic!("expected usage for {argv:?}");
+        };
+        assert_eq!(error.code, Code::USAGE.as_str());
+        assert_eq!(error.message, command::USAGE);
+    }
+    assert_eq!(Code::USAGE.status().get(), 2);
+}
+
+#[test]
+fn native_list_renders_ready_pending_and_down_without_session_ids() {
+    let base = Base::parse(DEFAULT_BASE).unwrap();
+    let result = invoke_with("vm.session.list", json!({}), &base, |request: Request| {
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.uri, format!("{DEFAULT_BASE}/v1/sessions"));
+        assert!(request.headers.is_empty());
+        Ok(response(
+            200,
+            json!([
+                {"sessionId":"session-1","name":"default","profile":"travel","state":"ready"},
+                {"sessionId":"session-2","name":"work","profile":"travel","state":"pending"},
+                {"sessionId":"session-3","name":"old","profile":"travel","state":"down","reason":"idle"}
+            ]),
+        ))
+    })
+    .unwrap();
+    assert_eq!(
+        result,
+        json!([
+            {"name":"default","profile":"travel","state":"ready"},
+            {"name":"work","profile":"travel","state":"pending"},
+            {"name":"old","profile":"travel","state":"down","reason":"idle"}
+        ])
+    );
+}
+
+#[test]
+fn native_close_resolves_the_name_and_only_accepts_204() {
+    let origin = format!("{DEFAULT_BASE}/runner/api");
+    let base = Base::parse(&format!("{origin}/")).unwrap();
+    for (status, body, expected_error) in [
+        (204, Value::Null, None),
+        (200, Value::Null, Some("vm-failed")),
+        (
+            404,
+            json!({"error":"unknown_session", "detail":"private-sentinel"}),
+            Some("vm-unknown-session"),
+        ),
+        (
+            502,
+            json!({"error":"session_delete_failed"}),
+            Some("vm-session-delete-failed"),
+        ),
+        (
+            504,
+            json!({"error":"session_delete_timeout"}),
+            Some("vm-session-delete-timeout"),
+        ),
+        (401, json!("private-sentinel"), Some("vm-unauthorized")),
+        (503, json!("private-sentinel"), Some("vm-unavailable")),
+    ] {
+        let mut requests = Vec::new();
+        let result = invoke_with(
+            "vm.session.close",
+            json!({"name":"work"}),
+            &base,
+            |request: Request| {
+                requests.push(request);
+                Ok(if requests.len() == 1 {
+                    response(
+                        200,
+                        json!([
+                            {"sessionId":"session-1","name":"default","profile":"travel","state":"ready"},
+                            {"sessionId":"session-2","name":"work","profile":"travel","state":"pending"}
+                        ]),
+                    )
+                } else {
+                    response(status, body.clone())
+                })
+            },
+        );
+        match expected_error {
+            Some(expected) => {
+                let error = result.unwrap_err();
+                assert_eq!(error.code().as_str(), expected);
+                assert_eq!(error.to_string(), expected);
+            }
+            None => assert_eq!(result.unwrap(), json!({"name":"work","state":"closed"})),
+        }
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method, "GET");
+        assert_eq!(requests[0].uri, format!("{origin}/v1/sessions"));
+        assert_eq!(requests[1].method, "DELETE");
+        assert_eq!(requests[1].uri, format!("{origin}/v1/sessions/session-2"));
+        assert!(requests.iter().all(|r| r.headers.is_empty()));
+    }
+}
+
+#[test]
+fn native_close_targets_the_live_row_over_a_terminating_namesake() {
+    let origin = format!("{DEFAULT_BASE}/runner/api");
+    let base = Base::parse(&origin).unwrap();
+    for live_state in ["ready", "pending"] {
+        let mut requests = Vec::new();
+        let closed = invoke_with(
+            "vm.session.close",
+            json!({"name":"default"}),
+            &base,
+            |request: Request| {
+                requests.push(request);
+                Ok(if requests.len() == 1 {
+                    response(
+                        200,
+                        json!([
+                            {"sessionId":"session-1","name":"default","profile":"travel","state":"down","reason":"idle"},
+                            {"sessionId":"session-2","name":"default","profile":"travel","state":live_state}
+                        ]),
+                    )
+                } else {
+                    response(204, Value::Null)
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(closed, json!({"name":"default","state":"closed"}));
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method, "GET");
+        assert_eq!(requests[0].uri, format!("{origin}/v1/sessions"));
+        assert_eq!(requests[1].method, "DELETE");
+        assert_eq!(requests[1].uri, format!("{origin}/v1/sessions/session-2"));
+    }
+}
+
+#[test]
+fn close_selection_requires_one_row_in_the_preferred_state() {
+    let reservations = |states: &[&str]| {
+        states
+            .iter()
+            .enumerate()
+            .map(|(index, state)| {
+                json!({"sessionId":format!("session-{index}"),"name":"default","profile":"travel","state":state})
+            })
+            .collect::<Vec<_>>()
+    };
+    for (states, expected) in [
+        (&["down"][..], Ok("session-0")),
+        (&["down", "down"], Err("invalid-response")),
+        (&["down", "ready", "pending"], Err("invalid-response")),
+        (&["draining"], Err("invalid-response")),
+    ] {
+        let sessions = list_sessions(response(200, json!(reservations(states)))).unwrap();
+        assert_eq!(
+            close_session_id(&sessions, "default").map_err(|error| error.code().as_str()),
+            expected
+        );
+    }
+}
+
+#[test]
+fn native_session_verbs_tolerate_unknown_state_and_reason_strings() {
+    let base = Base::parse(DEFAULT_BASE).unwrap();
+    let sessions = json!([
+        {"sessionId":"session-1","name":"default","profile":"travel","state":"ready"},
+        {"sessionId":"session-2","name":"future","profile":"travel","state":"draining"},
+        {"sessionId":"session-3","name":"old","profile":"travel","state":"down","reason":"future_reason"}
+    ]);
+    let listed = invoke_with("vm.session.list", json!({}), &base, |request: Request| {
+        assert_eq!(request.method, "GET");
+        Ok(response(200, sessions.clone()))
+    })
+    .unwrap();
+    assert_eq!(
+        listed,
+        json!([
+            {"name":"default","profile":"travel","state":"ready"},
+            {"name":"future","profile":"travel","state":"unknown"},
+            {"name":"old","profile":"travel","state":"down","reason":"unknown"}
+        ])
+    );
+
+    let closed = invoke_with(
+        "vm.session.close",
+        json!({"name":"default"}),
+        &base,
+        |request: Request| {
+            if request.method == "GET" {
+                Ok(response(200, sessions.clone()))
+            } else {
+                assert_eq!(request.method, "DELETE");
+                assert_eq!(request.uri, format!("{DEFAULT_BASE}/v1/sessions/session-1"));
+                Ok(response(204, Value::Null))
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(closed, json!({"name":"default","state":"closed"}));
+}
+
+#[test]
+fn native_close_never_deletes_for_a_missing_name_or_unsafe_id() {
+    let base = Base::parse(DEFAULT_BASE).unwrap();
+    for (name, id, expected) in [
+        ("missing", "session-1", "vm-unknown-session"),
+        ("default", "../session-1", "invalid-response"),
+    ] {
+        let error = invoke_with(
+            "vm.session.close",
+            json!({"name":name}),
+            &base,
+            |request: Request| {
+                assert_eq!(request.method, "GET");
+                Ok(response(
+                    200,
+                    json!([{"sessionId":id,"name":"default","profile":"travel","state":"ready"}]),
+                ))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), expected);
+    }
+}
+
+#[test]
+fn counted_session_quota_preserves_the_error_code_and_formats_only_counts() {
+    for (body, message) in [
+        (
+            json!({"outcome":"not_executed","reason":"quota","sessionsInUse":1,"maxSessions":1,"detail":"private-sentinel"}),
+            "could not reach host: you're at 1 of 1 running instance allowed. close another session to use another host",
+        ),
+        (
+            json!({"outcome":"not_executed","reason":"quota","sessionsInUse":2,"maxSessions":2}),
+            "could not reach host: you're at 2 of 2 running instances allowed. close another session to use another host",
+        ),
+        (
+            json!({"outcome":"not_executed","reason":"quota","maxSessions":1}),
+            "vm-quota",
+        ),
+    ] {
+        let error = status_error(&response(400, body));
+        assert_eq!(error.code().as_str(), "vm-quota");
+        assert_eq!(error.to_string(), message);
+    }
 }

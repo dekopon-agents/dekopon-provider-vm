@@ -14,6 +14,7 @@ http:
   nonPublicHttps: [vm-runner.vm-runner.svc.cluster.local:8443]
 capabilities:
   vm:
+    defaultSecretUse: {drn: "drn:secret:vm/token", sink: httpBearer}
     constraints:
       timeoutMs: 120000
       http:
@@ -41,6 +42,16 @@ capabilities:
             attach: true
           http:
             maxResponseBytes: 8650752
+      vm.session.list:
+        constraints:
+          timeoutMs: 30000
+          http:
+            allowedMethods: [GET]
+            maxRequests: 1
+      vm.session.close:
+        constraints:
+          http:
+            allowedMethods: [GET, DELETE]
 
 # Owner-only secret-map fragment; never put token bytes in providerSettings.
 # Separate bindings scope each capability to its methods and route family.
@@ -84,3 +95,22 @@ capabilities:
 #           - {match: segmentPrefix, path: /v1/jobs}
 #         allowQuery: false
 #         maxInjections: 1
+#       - id: vm-session-list-token
+#         capabilities: [vm.session.list]
+#         sink: httpBearer
+#         allowedHosts: [vm-runner.vm-runner.svc.cluster.local:8443]
+#         allowedMethods: [GET]
+#         allowedPaths:
+#           - {match: exact, path: /v1/sessions}
+#         allowQuery: false
+#         maxInjections: 1
+#       - id: vm-session-close-token
+#         capabilities: [vm.session.close]
+#         sink: httpBearer
+#         allowedHosts: [vm-runner.vm-runner.svc.cluster.local:8443]
+#         # GET /v1/sessions, then DELETE /v1/sessions/{id}.
+#         allowedMethods: [GET, DELETE]
+#         allowedPaths:
+#           - {match: segmentPrefix, path: /v1/sessions}
+#         allowQuery: false
+#         maxInjections: 2

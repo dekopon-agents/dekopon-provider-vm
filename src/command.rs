@@ -1,4 +1,7 @@
-use crate::{Artifact, ArtifactInput, Exec, ExecInput, Job, JobInput, Vm};
+use crate::{
+    Artifact, ArtifactInput, CloseInput, Exec, ExecInput, Job, JobInput, ListInput, SessionClose,
+    SessionList, Vm,
+};
 use dekopon_provider_sdk::provider::{Proposal, Usage};
 use dekopon_provider_sdk::{SecretDrn, SecretUseProposal};
 
@@ -6,8 +9,8 @@ use crate::Operation;
 
 pub(crate) const MAX_ARGV: usize = 70;
 pub(crate) const MAX_BYTES: usize = 24_576;
-pub(crate) const USAGE: &str = "usage: ssh [--session NAME] --secret DRN [--timeout SECONDS] PROFILE -- ARGV...\n       ssh --job JOBID [--wait SECONDS] --secret DRN\n       ssh --artifacts [--session NAME] --secret DRN PROFILE [PATH]\ntry 'ssh --help'\n";
-pub(crate) const HELP: &str = "ssh: broker-authorized commands in vm-runner jails (not SSH transport).\n\nssh [--session NAME] --secret DRN [--timeout SECONDS] PROFILE -- ARGV...\nssh --job JOBID [--wait SECONDS] --secret DRN\nssh --artifacts [--session NAME] --secret DRN PROFILE [PATH]\n\nSession defaults to default; timeout is 1-25 seconds (default 25).\n--wait 1-25 seconds (no default) lets vm-runner hold a running job read until\nthe job finishes or the wait ends; poll with --wait, not sleep.\nNAME and PROFILE: lowercase letters, digits and hyphens, 1-63 characters,\nstarting with a letter or digit. Stdin passes through to exec.\n--secret requires a bare drn:secret:<path>.\nThe broker authorizes and injects the Bearer token; this provider never sees it.\nArtifacts return UTF-8 text up to 64 KiB, otherwise metadata only.\n.png/.jpg/.jpeg attach for inspection; .mp4 attaches for outbound use only.\nA separately authorized `asset send N` delivers an attached asset to chat.\nArtifact reads require a flat name: [A-Za-z0-9][A-Za-z0-9._-]{0,127}.\nCopy other files to a flat name under /artifacts first; listing shows all paths.\nWithout PATH, --artifacts lists the session's artifacts.\njail tools: `browse --help` (run: ssh --secret DRN PROFILE -- browse --help).\n-h, --help prints this help. No retries; poll an unknown outcome with --job.\n";
+pub(crate) const USAGE: &str = "usage: ssh [--session NAME] [--secret DRN] [--timeout SECONDS] PROFILE -- ARGV...\n       ssh --job JOBID [--wait SECONDS] [--secret DRN]\n       ssh --artifacts [--session NAME] [--secret DRN] PROFILE [PATH]\n       ssh --list [--secret DRN]\n       ssh --close [--session NAME] [--secret DRN]\ntry 'ssh --help'\n";
+pub(crate) const HELP: &str = "ssh: broker-authorized commands in vm-runner jails (not SSH transport).\n\nssh [--session NAME] [--secret DRN] [--timeout SECONDS] PROFILE -- ARGV...\nssh --job JOBID [--wait SECONDS] [--secret DRN]\nssh --artifacts [--session NAME] [--secret DRN] PROFILE [PATH]\nssh --list [--secret DRN]\nssh --close [--session NAME] [--secret DRN]\n\n--list shows the caller's hosts. --close waits until the session's pod is gone.\nSession defaults to default; timeout is 1-25 seconds (default 25).\n--wait 1-25 seconds (no default) lets vm-runner hold a running job read until\nthe job finishes or the wait ends; poll with --wait, not sleep.\nNAME and PROFILE: lowercase letters, digits and hyphens, 1-63 characters,\nstarting with a letter or digit. Stdin passes through to exec.\nOmit --secret to use the broker's configured default, or pass a bare drn:secret:<path>.\nThe broker authorizes and injects the Bearer token; this provider never sees it.\nArtifacts return UTF-8 text up to 64 KiB, otherwise metadata only.\n.png/.jpg/.jpeg attach for inspection; .mp4 attaches for outbound use only.\nA separately authorized `asset send N` delivers an attached asset to chat.\nArtifact reads require a flat name: [A-Za-z0-9][A-Za-z0-9._-]{0,127}.\nCopy other files to a flat name under /artifacts first; listing shows all paths.\nWithout PATH, --artifacts lists the session's artifacts.\njail tools: `browse --help` (run: ssh PROFILE -- browse --help).\n-h, --help prints this help. No retries; poll an unknown outcome with --job.\n";
 const SECRET: &str = "ssh: --secret requires one bare secret DRN\n";
 pub(crate) const ARTIFACT_PATH: &str = "ssh: artifact reads require a flat name; copy the file to a flat name under /artifacts first (e.g. ssh --secret DRN PROFILE -- cp 'dir/a b.png' /artifacts/shot.png)\n";
 
@@ -99,6 +102,16 @@ fn parse(argv: &[String], stdin_piped: bool) -> Result<Proposal<Vm>, &'static st
                 }
                 operation = Some(Operation::Artifact);
             }
+            "--list" | "--close" => {
+                if operation.is_some() {
+                    return Err(USAGE);
+                }
+                operation = Some(if arg == "--list" {
+                    Operation::List
+                } else {
+                    Operation::Close
+                });
+            }
             s if s.starts_with('-') => {
                 return Err(
                     if matches!(operation, Some(Operation::Artifact)) && !positional.is_empty() {
@@ -111,8 +124,10 @@ fn parse(argv: &[String], stdin_piped: bool) -> Result<Proposal<Vm>, &'static st
             s => positional.push(s),
         }
     }
-    let secret = secret.ok_or(SECRET)?;
     let op = operation.unwrap_or(Operation::Exec);
+    if wait.is_some() && !matches!(op, Operation::Job) {
+        return Err(USAGE);
+    }
     let name = session.unwrap_or("default");
     if !self::name(name) {
         return Err(USAGE);
@@ -128,7 +143,16 @@ fn parse(argv: &[String], stdin_piped: bool) -> Result<Proposal<Vm>, &'static st
                 wait_seconds: wait,
             })
         }
-        Operation::Exec | Operation::Artifact if wait.is_some() => return Err(USAGE),
+        Operation::List | Operation::Close => {
+            if timeout.is_some() || exec.is_some() || !positional.is_empty() {
+                return Err(USAGE);
+            }
+            match op {
+                Operation::List if session.is_none() => Proposal::to::<SessionList>(ListInput {}),
+                Operation::Close => Proposal::to::<SessionClose>(CloseInput { name: name.into() }),
+                _ => return Err(USAGE),
+            }
+        }
         Operation::Exec => {
             if positional.len() != 1 || !self::name(positional[0]) {
                 return Err(USAGE);
@@ -171,7 +195,10 @@ fn parse(argv: &[String], stdin_piped: bool) -> Result<Proposal<Vm>, &'static st
             })
         }
     };
-    Ok(proposal.with_secret_use(SecretUseProposal::HttpBearer { secret }))
+    Ok(match secret {
+        Some(secret) => proposal.with_secret_use(SecretUseProposal::HttpBearer { secret }),
+        None => proposal,
+    })
 }
 
 /// A whole number of seconds, 1-25.
